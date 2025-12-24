@@ -26,6 +26,30 @@ const STAGE_COLORS = [
   'bg-teal-500',
 ];
 
+function normalizeStageLabel(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function guessWonLostStageIds(stages: BoardStage[], opts?: { wonLabel?: string; lostLabel?: string }) {
+  const byLabel = new Map<string, string>();
+  for (const s of stages) {
+    byLabel.set(normalizeStageLabel(s.label), s.id);
+  }
+
+  const exactWon = opts?.wonLabel ? byLabel.get(normalizeStageLabel(opts.wonLabel)) : undefined;
+  const exactLost = opts?.lostLabel ? byLabel.get(normalizeStageLabel(opts.lostLabel)) : undefined;
+
+  // Fallback heuristic: keep it conservative and readable.
+  const heuristicWon =
+    exactWon
+    ?? stages.find(s => /\b(ganho|won|fechado ganho|conclu[ií]do)\b/i.test(s.label))?.id;
+  const heuristicLost =
+    exactLost
+    ?? stages.find(s => /\b(perdido|lost|churn|cancelad[oa])\b/i.test(s.label))?.id;
+
+  return { wonStageId: heuristicWon ?? '', lostStageId: heuristicLost ?? '' };
+}
+
 
 export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
   isOpen,
@@ -117,12 +141,19 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
       setName(templateData.name);
       setDescription(templateData.description);
       setLinkedLifecycleStage(templateData.linkedLifecycleStage || '');
-      // Templates don't pre-define won/lost stage IDs because staged IDs are generated
-      // But we could try to guess based on label? For now, leave empty.
-      setStages(templateData.stages.map((s, idx) => ({
+      const nextStages = templateData.stages.map((s, idx) => ({
         id: crypto.randomUUID(),
         ...s
-      })));
+      }));
+      setStages(nextStages);
+
+      // UX: auto-fill won/lost stages for templates using deterministic labels, with heuristic fallback.
+      const guessed = guessWonLostStageIds(nextStages, {
+        wonLabel: templateData.defaultWonStageLabel,
+        lostLabel: templateData.defaultLostStageLabel,
+      });
+      setWonStageId(guessed.wonStageId);
+      setLostStageId(guessed.lostStageId);
     }
   };
 

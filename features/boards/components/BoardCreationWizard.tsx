@@ -29,6 +29,29 @@ interface ChatMessage {
   proposalData?: GeneratedBoard;
 }
 
+function normalizeStageLabel(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function guessWonLostStageIds(stages: BoardStage[], opts?: { wonLabel?: string; lostLabel?: string }) {
+  const byLabel = new Map<string, string>();
+  for (const s of stages) {
+    byLabel.set(normalizeStageLabel(s.label), s.id);
+  }
+
+  const exactWon = opts?.wonLabel ? byLabel.get(normalizeStageLabel(opts.wonLabel)) : undefined;
+  const exactLost = opts?.lostLabel ? byLabel.get(normalizeStageLabel(opts.lostLabel)) : undefined;
+
+  const heuristicWon =
+    exactWon
+    ?? stages.find(s => /\b(ganho|won|fechado ganho|conclu[ií]do)\b/i.test(s.label))?.id;
+  const heuristicLost =
+    exactLost
+    ?? stages.find(s => /\b(perdido|lost|churn|cancelad[oa])\b/i.test(s.label))?.id;
+
+  return { wonStageId: heuristicWon ?? '', lostStageId: heuristicLost ?? '' };
+}
+
 export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
   isOpen,
   onClose,
@@ -104,6 +127,11 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
       ...s,
     }));
 
+    const guessed = guessWonLostStageIds(boardStages, {
+      wonLabel: template.defaultWonStageLabel,
+      lostLabel: template.defaultLostStageLabel,
+    });
+
     // Randomize Agent Name (Names ending in 'ia')
     const agentNames = [
       'Sofia',
@@ -126,6 +154,8 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
       template: templateType,
       stages: boardStages,
       isDefault: false,
+      wonStageId: (guessed.wonStageId || null) as any,
+      lostStageId: (guessed.lostStageId || null) as any,
       // Strategy Fields
       agentPersona: {
         ...template.agentPersona!,

@@ -22,6 +22,12 @@ export interface BoardTemplate {
   agentPersona?: AgentPersona;
   goal?: BoardGoal;
   entryTrigger?: string;
+  /**
+   * UX: deterministic defaults for win/loss stages (used to auto-populate wonStageId/lostStageId
+   * after stage UUIDs are generated at runtime).
+   */
+  defaultWonStageLabel?: string;
+  defaultLostStageLabel?: string;
 }
 
 export const BOARD_TEMPLATES: Record<BoardTemplateType, BoardTemplate> = {
@@ -65,6 +71,8 @@ export const BOARD_TEMPLATES: Record<BoardTemplateType, BoardTemplate> = {
       { label: 'Ganho', color: 'bg-green-500', linkedLifecycleStage: 'CUSTOMER' },
       { label: 'Perdido', color: 'bg-red-500', linkedLifecycleStage: 'OTHER' },
     ],
+    defaultWonStageLabel: 'Ganho',
+    defaultLostStageLabel: 'Perdido',
     agentPersona: {
       name: 'Closer Bot',
       role: 'Executivo de Vendas',
@@ -119,6 +127,8 @@ export const BOARD_TEMPLATES: Record<BoardTemplateType, BoardTemplate> = {
       { label: 'Em Risco', color: 'bg-yellow-500', linkedLifecycleStage: 'CUSTOMER' },
       { label: 'Churn', color: 'bg-red-500', linkedLifecycleStage: 'OTHER' },
     ],
+    // For CS boards, "Churn" behaves like a loss stage.
+    defaultLostStageLabel: 'Churn',
     agentPersona: {
       name: 'Account Manager',
       role: 'Gerente de Contas',
