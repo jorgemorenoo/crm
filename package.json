@@ -12,10 +12,10 @@
     "test:run": "vitest run"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.0-beta.89",
-    "@ai-sdk/google": "^3.0.0-beta.78",
-    "@ai-sdk/openai": "^3.0.0-beta.102",
-    "@ai-sdk/react": "^3.0.0-beta.160",
+    "@ai-sdk/anthropic": "3.0.1",
+    "@ai-sdk/google": "3.0.1",
+    "@ai-sdk/openai": "3.0.1",
+    "@ai-sdk/react": "3.0.3",
     "@faker-js/faker": "^10.1.0",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-accordion": "^1.2.12",
@@ -36,7 +36,7 @@
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.87.1",
     "@tanstack/react-query": "^5.90.12",
-    "ai": "^6.0.0-beta.157",
+    "ai": "6.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",

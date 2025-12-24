@@ -1,0 +1,39 @@
+# Changelog
+
+## 24/12/2025
+
+- **Atualização do AI SDK para versões estáveis (latest)**:
+  - `ai`: `6.0.3` (antes: `^6.0.0-beta.157`)
+  - `@ai-sdk/react`: `3.0.3` (antes: `^3.0.0-beta.160`)
+  - `@ai-sdk/openai`: `3.0.1` (antes: `^3.0.0-beta.102`)
+  - `@ai-sdk/google`: `3.0.1` (antes: `^3.0.0-beta.78`)
+  - `@ai-sdk/anthropic`: `3.0.1` (antes: `^3.0.0-beta.89`)
+
+- **Detalhes técnicos**:
+  - Migração do canal **beta** para **stable** mantendo a stack do projeto (AI SDK v6 + `ToolLoopAgent` + `createAgentUIStreamResponse` + `@ai-sdk/react/useChat`).
+  - Dependências **fixadas** (sem `^`) para builds reprodutíveis; `package-lock.json` regenerado via reinstall limpo.
+
+- **AI SDK DevTools (uso local)**:
+  - Adicionado `@ai-sdk/devtools` e um script `ai:devtools` para abrir o viewer local.
+  - Instrumentação opcional via `AI_DEVTOOLS=1` (somente em `NODE_ENV=development`) para capturar runs/steps e inspecionar chamadas do agente, tool calls, tokens e payloads em ambiente local.
+  - Ajustado `npm run dev` para iniciar automaticamente o viewer do DevTools + abrir `http://localhost:4983` + ligar `AI_DEVTOOLS=1`. Adicionado `dev:plain` para rodar sem DevTools.
+
+- **Chat com fricção zero (Quick Replies)**:
+  - Quando o assistente listar opções (ex.: desambiguação de deals) ou pedir “valor final”, o chat renderiza botões clicáveis (quick replies) para evitar digitação.
+  - O agente injeta um mapa recente `título -> ID` no system prompt para conseguir seguir o fluxo quando o usuário seleciona apenas pelo título (sem expor UUIDs).
+  - Correção: evitado `ReferenceError` no `UIChat` movendo `sanitizeAssistantText` para função hoisted (antes era `const` e era usada antes de inicializar).
+  - Melhoria: ao pedir “valor final”, o chat sugere botões com valores detectados no cockpit/últimas mensagens/listas de deals (não só no texto do assistente).
+  - Melhoria: ao responder “Encontrei X deals...”, o chat também renderiza botões de seleção imediatamente (sem precisar o assistente perguntar “qual deles?”).
+
+- **Experimento: AI SDK RSC (branch `feat/ai-sdk-rsc-experiment`)**:
+  - Adicionado `@ai-sdk/rsc` e uma página de laboratório em `/labs/ai-rsc` para testar streaming de UI via RSC (`createAI`, `useUIState/useActions`, `streamUI`).
+  - Inclui uma tool `searchDeals` que renderiza opções clicáveis (client component) dentro da conversa para comparar com o fluxo atual via AI SDK UI.
+  - Ajuste: “router” no Server Action para detectar `procure deals com X` e renderizar opções clicáveis diretamente (evita alucinação quando o modelo não chama a tool).
+  - Melhoria: após selecionar um deal, a UI renderiza um card com **ações sugeridas** (ex.: detalhes, próximos passos, mensagem WhatsApp) via botões, usando o contexto do deal (sem digitar).
+  - Melhoria: ações de CRM para o deal selecionado via botões (sem digitação): **Marcar como ganho** (com input de valor), **Marcar como perdido** (com motivo), **Mover estágio** (lista de estágios do board), executando via `createCRMTools` no server action.
+  - Melhoria de UX: painel de deal agora é tratado como **“painel único”** (substitui/atualiza em vez de duplicar cards no histórico), reduzindo ruído visual ao navegar entre ações.
+  - Melhoria de UX: ações **Ganho / Perdido / Mover** agora abrem **accordion inline dentro do painel** (sem criar “mensagens de formulário” no chat). O server action fica responsável só por executar a tool e devolver o painel atualizado.
+  - Melhoria de UX: painel do deal agora é **sticky** (fixo acima do input), mantendo contexto sempre visível e deixando o histórico rolável somente com mensagens de conversa.
+  - Melhoria de UX: refatoração visual inspirada no template da Vercel (`vercel-labs/ai-sdk-preview-rsc-genui`): coluna central fixa (~520px), feed em estilo “linhas com ícone” (menos bolhas pesadas), empty-state + suggested actions e paleta `zinc` para um visual mais limpo.
+  - Paridade com o template da Vercel: adicionadas dependências **`sonner`** (Toaster/toasts) e **`streamdown`** (renderização de Markdown), animações com **`framer-motion`** e hook de **scroll-to-bottom** no chat.
+  - Streaming de texto alinhado ao exemplo oficial: uso de `createStreamableValue` + `useStreamableValue` para renderizar conteúdo em tempo real com Markdown durante `streamUI`.
