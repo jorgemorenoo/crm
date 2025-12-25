@@ -66,7 +66,11 @@ export const useMoveDeal = () => {
       } else if (
         // Prefer explicit won/lost stages when configured on the board.
         // Fallback to lifecycle hints ONLY when the board doesn't define won/lost IDs.
-        (board.wonStageId ? targetStageId === board.wonStageId : targetStage?.linkedLifecycleStage === 'CUSTOMER')
+        (
+          board.wonStageId
+            ? targetStageId === board.wonStageId
+            : (board.linkedLifecycleStage !== 'CUSTOMER' && targetStage?.linkedLifecycleStage === 'CUSTOMER')
+        )
       ) {
         isWon = true;
         isLost = false;
@@ -212,7 +216,11 @@ export const useMoveDeal = () => {
       const targetStage = board.stages.find(s => s.id === targetStageId);
       const isWon =
         explicitWin
-        || (board.wonStageId ? targetStageId === board.wonStageId : targetStage?.linkedLifecycleStage === 'CUSTOMER');
+        || (
+          board.wonStageId
+            ? targetStageId === board.wonStageId
+            : (board.linkedLifecycleStage !== 'CUSTOMER' && targetStage?.linkedLifecycleStage === 'CUSTOMER')
+        );
       const isLost =
         explicitLost
         || (board.lostStageId ? targetStageId === board.lostStageId : targetStage?.linkedLifecycleStage === 'OTHER');

@@ -14,6 +14,7 @@
   - Templates (mercado): CS foi separado em **CS (Saúde da Conta)** (health/risk/churn) e **Expansão (Upsell)** virou um **pipeline comercial separado** na jornada B2B (não auto-encadeado por padrão).
   - Playbook: adicionado **Infoprodutor (Completo)** como jornada oficial e uma opção de instalação **“Incluir Renovações (Assinatura)”** antes de instalar (board opcional).
   - Playbook: ajustado **Funil de Vendas Simples** para labels mais diretas: **Novo → Em conversa → Proposta → Ganho → Perdido**.
+  - Playbook (Infoprodutor): defaults de **Won/Lost** agora são aplicados automaticamente na instalação (ex.: “Matriculado” em Vendas, “Primeiro Resultado” no Onboarding, “Upsell Fechado” em Expansão, “Renovado” em Renovações; CS Health usa “Arquivar” e “Churn”).
 
 ## 24/12/2025
 

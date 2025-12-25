@@ -100,6 +100,8 @@ export const BOARD_TEMPLATES: Record<BoardTemplateType, BoardTemplate> = {
       { label: 'Treinamento', color: 'bg-yellow-500', linkedLifecycleStage: 'CUSTOMER' },
       { label: 'Go Live', color: 'bg-green-500', linkedLifecycleStage: 'CUSTOMER' },
     ],
+    // For onboarding boards, we treat the final milestone as "Won" to enable handoff automations.
+    defaultWonStageLabel: 'Go Live',
     agentPersona: {
       name: 'CS Manager',
       role: 'Gerente de Sucesso do Cliente',

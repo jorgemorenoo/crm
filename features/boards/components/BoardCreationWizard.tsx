@@ -296,6 +296,24 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
     const journey = getJourneyForInstall(journeyId);
     if (!journey) return;
 
+    const wonLostByJourneyAndSlug: Record<string, Record<string, { wonLabel?: string; lostLabel?: string; wonArchive?: boolean }>> = {
+      INFOPRODUCER: {
+        sales: { wonLabel: 'Matriculado (Ganho)', lostLabel: 'Não comprou (Perdido)' },
+        onboarding: { wonLabel: 'Primeiro Resultado (Ganho)' },
+        cs: { wonArchive: true, lostLabel: 'Churn' },
+        expansion: { wonLabel: 'Upsell Fechado (Ganho)', lostLabel: 'Perdido' },
+        renewals: { wonLabel: 'Renovado (Ganho)', lostLabel: 'Cancelado (Perdido)' },
+      },
+      B2B_MACHINE: {
+        onboarding: { wonLabel: 'Go Live' },
+        cs: { wonArchive: true, lostLabel: 'Churn' },
+        expansion: { wonLabel: 'Upsell Fechado', lostLabel: 'Perdido' },
+      },
+      SIMPLE_SALES: {
+        'sales-simple': { wonLabel: 'Ganho', lostLabel: 'Perdido' },
+      },
+    };
+
     // For official journeys we can safely set the board-level lifecycle linkage,
     // so the UI/analytics can understand the "handoff" between boards.
     const boardLifecycleBySlug: Record<string, string | undefined> = {
@@ -330,9 +348,10 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
         'sales-simple': 'SALES',
       };
       const template = BOARD_TEMPLATES[templateBySlug[boardDef.slug] ?? 'CUSTOM'];
+      const overrides = wonLostByJourneyAndSlug[journeyId]?.[boardDef.slug] || {};
       const guessed = guessWonLostStageIds(boardStages, {
-        wonLabel: template.defaultWonStageLabel,
-        lostLabel: template.defaultLostStageLabel,
+        wonLabel: overrides.wonLabel ?? template.defaultWonStageLabel,
+        lostLabel: overrides.lostLabel ?? template.defaultLostStageLabel,
       });
 
       // Pass index as order - this will be added to the current max order in the service
@@ -343,8 +362,9 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
         template: 'CUSTOM',
         stages: boardStages,
         isDefault: false,
-        wonStageId: guessed.wonStageId || undefined,
+        wonStageId: overrides.wonArchive ? undefined : (guessed.wonStageId || undefined),
         lostStageId: guessed.lostStageId || undefined,
+        wonStayInStage: overrides.wonArchive ? true : false,
         agentPersona: boardDef.strategy?.agentPersona,
         goal: boardDef.strategy?.goal,
         entryTrigger: boardDef.strategy?.entryTrigger,
