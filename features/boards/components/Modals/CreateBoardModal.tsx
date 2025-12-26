@@ -1,10 +1,11 @@
-import React, { useState, useId } from 'react';
-import { X, Plus, GripVertical, Trash2, ChevronDown, Settings } from 'lucide-react';
+import React, { useMemo, useState, useId } from 'react';
+import { Plus, GripVertical, Trash2, ChevronDown, Settings } from 'lucide-react';
 import { Board, BoardStage, ContactStage } from '@/types';
 import { BOARD_TEMPLATES, BoardTemplateType } from '@/board-templates';
 import { LifecycleSettingsModal } from '@/features/settings/components/LifecycleSettingsModal';
 import { useCRM } from '@/context/CRMContext';
-import { FocusTrap, useFocusReturn } from '@/lib/a11y';
+import { Modal } from '@/components/ui/Modal';
+import { MODAL_FOOTER_CLASS } from '@/components/ui/modalStyles';
 
 interface CreateBoardModalProps {
   isOpen: boolean;
@@ -12,6 +13,11 @@ interface CreateBoardModalProps {
   onSave: (board: Omit<Board, 'id' | 'createdAt'>) => void;
   editingBoard?: Board; // Se fornecido, estamos editando
   availableBoards: Board[]; // Para selecionar o próximo board
+  /**
+   * Optional: allow switching which board is being edited without closing the modal.
+   * This removes the "close → gear → pick another board" friction.
+   */
+  onSwitchEditingBoard?: (board: Board) => void;
 }
 
 const STAGE_COLORS = [
@@ -26,18 +32,66 @@ const STAGE_COLORS = [
   'bg-teal-500',
 ];
 
+function normalizeStageLabel(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function createDragPreviewFromElement(el: HTMLElement) {
+  const rect = el.getBoundingClientRect();
+  const clone = el.cloneNode(true) as HTMLElement;
+  clone.style.width = `${rect.width}px`;
+  clone.style.height = `${rect.height}px`;
+  clone.style.boxSizing = 'border-box';
+  clone.style.position = 'fixed';
+  clone.style.top = '-1000px';
+  clone.style.left = '-1000px';
+  clone.style.pointerEvents = 'none';
+  clone.style.opacity = '0.95';
+  clone.style.transform = 'scale(1.02)';
+  clone.style.borderRadius = '16px';
+  clone.style.zIndex = '999999';
+  document.body.appendChild(clone);
+  return () => {
+    try {
+      document.body.removeChild(clone);
+    } catch {
+      // noop
+    }
+  };
+}
+
+function guessWonLostStageIds(stages: BoardStage[], opts?: { wonLabel?: string; lostLabel?: string }) {
+  const byLabel = new Map<string, string>();
+  for (const s of stages) {
+    byLabel.set(normalizeStageLabel(s.label), s.id);
+  }
+
+  const exactWon = opts?.wonLabel ? byLabel.get(normalizeStageLabel(opts.wonLabel)) : undefined;
+  const exactLost = opts?.lostLabel ? byLabel.get(normalizeStageLabel(opts.lostLabel)) : undefined;
+
+  // Fallback heuristic: keep it conservative and readable.
+  const heuristicWon =
+    exactWon
+    ?? stages.find(s => /\b(ganho|won|fechado ganho|conclu[ií]do)\b/i.test(s.label))?.id;
+  const heuristicLost =
+    exactLost
+    ?? stages.find(s => /\b(perdido|lost|churn|cancelad[oa])\b/i.test(s.label))?.id;
+
+  return { wonStageId: heuristicWon ?? '', lostStageId: heuristicLost ?? '' };
+}
+
 
 export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
   isOpen,
   onClose,
   onSave,
   editingBoard,
-  availableBoards
+  availableBoards,
+  onSwitchEditingBoard,
 }) => {
   const headingId = useId();
-  useFocusReturn({ enabled: isOpen });
 
-  const { lifecycleStages } = useCRM();
+  const { lifecycleStages, products } = useCRM();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [nextBoardId, setNextBoardId] = useState<string>('');
@@ -46,9 +100,12 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
   const [lostStageId, setLostStageId] = useState<string>('');
   const [wonStayInStage, setWonStayInStage] = useState(false);
   const [lostStayInStage, setLostStayInStage] = useState(false);
+  const [defaultProductId, setDefaultProductId] = useState<string>('');
   const [selectedTemplate, setSelectedTemplate] = useState<BoardTemplateType | ''>('');
   const [stages, setStages] = useState<BoardStage[]>([]);
   const [isLifecycleModalOpen, setIsLifecycleModalOpen] = useState(false);
+  const [draggingStageId, setDraggingStageId] = useState<string | null>(null);
+  const [dragOverStageId, setDragOverStageId] = useState<string | null>(null);
 
   React.useEffect(() => {
     if (isOpen) {
@@ -61,6 +118,7 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
         setLostStageId(editingBoard.lostStageId || '');
         setWonStayInStage(editingBoard.wonStayInStage || false);
         setLostStayInStage(editingBoard.lostStayInStage || false);
+        setDefaultProductId(editingBoard.defaultProductId || '');
         setSelectedTemplate(editingBoard.template || '');
         setStages(editingBoard.stages);
       } else {
@@ -73,6 +131,7 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
         setLostStageId('');
         setWonStayInStage(false);
         setLostStayInStage(false);
+        setDefaultProductId('');
         setSelectedTemplate('');
         setStages([
           { id: crypto.randomUUID(), label: 'Nova', color: 'bg-blue-500' },
@@ -82,6 +141,13 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
       }
     }
   }, [isOpen, editingBoard]);
+
+  // Filter out current board to prevent self-reference
+  // Performance: avoid filtering on every render.
+  const validNextBoards = useMemo(
+    () => availableBoards.filter(b => b.id !== editingBoard?.id),
+    [availableBoards, editingBoard?.id]
+  );
 
   const handleAddStage = () => {
     const colorIndex = stages.length % STAGE_COLORS.length;
@@ -102,6 +168,23 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
     setStages(stages.map(s => s.id === id ? { ...s, ...updates } : s));
   };
 
+  /**
+   * UX: allow reordering stages by drag-and-drop.
+   * No external deps: uses HTML5 drag events.
+   */
+  const moveStage = (fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    setStages(prev => {
+      const fromIndex = prev.findIndex(s => s.id === fromId);
+      const toIndex = prev.findIndex(s => s.id === toId);
+      if (fromIndex < 0 || toIndex < 0) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+  };
+
   const handleTemplateSelect = (template: BoardTemplateType | '') => {
     setSelectedTemplate(template);
 
@@ -110,12 +193,19 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
       setName(templateData.name);
       setDescription(templateData.description);
       setLinkedLifecycleStage(templateData.linkedLifecycleStage || '');
-      // Templates don't pre-define won/lost stage IDs because staged IDs are generated
-      // But we could try to guess based on label? For now, leave empty.
-      setStages(templateData.stages.map((s, idx) => ({
+      const nextStages = templateData.stages.map((s, idx) => ({
         id: crypto.randomUUID(),
         ...s
-      })));
+      }));
+      setStages(nextStages);
+
+      // UX: auto-fill won/lost stages for templates using deterministic labels, with heuristic fallback.
+      const guessed = guessWonLostStageIds(nextStages, {
+        wonLabel: templateData.defaultWonStageLabel,
+        lostLabel: templateData.defaultLostStageLabel,
+      });
+      setWonStageId(guessed.wonStageId);
+      setLostStageId(guessed.lostStageId);
     }
   };
 
@@ -131,6 +221,7 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
       lostStageId: (lostStageId || null) as any,
       wonStayInStage,
       lostStayInStage,
+      defaultProductId: (defaultProductId || null) as any,
       template: selectedTemplate || 'CUSTOM',
       stages,
       isDefault: false
@@ -139,39 +230,61 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
     onClose();
   };
 
-  if (!isOpen) return null;
-
-  // Filter out current board to prevent self-reference
-  const validNextBoards = availableBoards.filter(b => b.id !== editingBoard?.id);
-
   return (
     <>
-      <FocusTrap active={isOpen && !isLifecycleModalOpen} onEscape={onClose}>
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby={headingId}
-        >
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title={editingBoard ? 'Editar Board' : 'Criar Novo Board'}
+        size="lg"
+        labelledById={headingId}
+        className="max-w-xl"
+        // We control padding/scroll inside, so keep the Modal body wrapper flat.
+        bodyClassName="p-0"
+        // Nested modal: avoid trapping focus behind the lifecycle modal.
+        focusTrapEnabled={!isLifecycleModalOpen}
+      >
+        <div className="flex flex-col">
+          {/* 
+            Scroll container:
+            Use an explicit max-height so the form never "explodes" beyond the visible area.
+            Keeps the footer always reachable/visible.
+          */}
+          <div className="overflow-y-auto p-4 sm:p-6 space-y-6 max-h-[calc(100dvh-14rem)] sm:max-h-[calc(100dvh-18rem)]">
+              {/* Switch board (edit mode only) */}
+              {editingBoard && onSwitchEditingBoard && availableBoards.length > 1 && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                    Editando board
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={editingBoard.id}
+                      onChange={(e) => {
+                        const next = availableBoards.find(b => b.id === e.target.value);
+                        if (next) onSwitchEditingBoard(next);
+                      }}
+                      className="w-full appearance-none px-4 py-2.5 pr-10 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 text-slate-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      aria-label="Selecionar board para editar"
+                    >
+                      {availableBoards.map(b => (
+                        <option key={b.id} value={b.id}>
+                          {b.name}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown
+                      size={18}
+                      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"
+                      aria-hidden="true"
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                    Dica: troque aqui para editar outro board sem fechar este modal.
+                  </p>
+                </div>
+              )}
 
-          <div className="relative z-10 w-full max-w-2xl bg-white dark:bg-dark-card rounded-2xl shadow-2xl overflow-hidden">
-            {/* Header */}
-            <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-white/10">
-              <h2 id={headingId} className="text-xl font-bold text-slate-900 dark:text-white">
-                {editingBoard ? 'Editar Board' : 'Criar Novo Board'}
-              </h2>
-              <button
-                onClick={onClose}
-                aria-label="Fechar modal"
-                className="p-2 hover:bg-slate-100 dark:hover:bg-white/5 rounded-lg transition-colors focus-visible-ring"
-              >
-                <X size={20} className="text-slate-500" aria-hidden="true" />
-              </button>
-            </div>
-
-            {/* Content */}
-            <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
               {/* Name */}
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
@@ -242,6 +355,30 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
                 </select>
                 <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                   Novos negócios de contatos neste estágio aparecerão automaticamente aqui.
+                </p>
+              </div>
+
+              {/* Default Product */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                  🧾 Produto padrão (opcional)
+                </label>
+                <select
+                  value={defaultProductId}
+                  onChange={(e) => setDefaultProductId(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 text-slate-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                >
+                  <option value="">Nenhum</option>
+                  {products
+                    .filter(p => p.active !== false)
+                    .map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} — R$ {Number(p.price ?? 0).toLocaleString('pt-BR')}
+                      </option>
+                    ))}
+                </select>
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  Sugere (ou pré-seleciona) um produto ao adicionar itens em deals desse board.
                 </p>
               </div>
 
@@ -353,11 +490,58 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
                   {stages.map((stage, index) => (
                     <div
                       key={stage.id}
-                      className="p-4 bg-slate-50 dark:bg-white/5 rounded-xl border border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20 transition-colors"
+                      data-stage-card="true"
+                      className={`p-4 bg-slate-50 dark:bg-white/5 rounded-xl border transition-colors ${
+                        dragOverStageId === stage.id
+                          ? 'border-primary-500/60 ring-2 ring-primary-500/20'
+                          : draggingStageId === stage.id
+                            ? 'border-primary-500/40 ring-2 ring-primary-500/10 opacity-70 shadow-lg'
+                            : 'border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20'
+                      }`}
+                      onDragOver={(e) => {
+                        // Required to allow dropping.
+                        e.preventDefault();
+                        if (draggingStageId) setDragOverStageId(stage.id);
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverStageId === stage.id) setDragOverStageId(null);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const fromId = e.dataTransfer.getData('text/stage-id');
+                        if (fromId) moveStage(fromId, stage.id);
+                        setDraggingStageId(null);
+                        setDragOverStageId(null);
+                      }}
                     >
                       {/* Stage Header */}
                       <div className="flex items-center gap-3 mb-3">
-                        <GripVertical size={18} className="text-slate-400 cursor-grab flex-shrink-0" />
+                        <button
+                          type="button"
+                          draggable
+                          onDragStart={(e) => {
+                            setDraggingStageId(stage.id);
+                            e.dataTransfer.setData('text/stage-id', stage.id);
+                            e.dataTransfer.effectAllowed = 'move';
+                            // Use the whole card as the drag "ghost" so it feels like you're dragging the item.
+                            const card = (e.currentTarget.closest('[data-stage-card="true"]') as HTMLElement | null);
+                            if (card) {
+                              const cleanup = createDragPreviewFromElement(card);
+                              // Ensure cleanup runs even if the browser doesn't fire dragend for some edge cases.
+                              window.setTimeout(cleanup, 0);
+                              e.dataTransfer.setDragImage(card, 24, 24);
+                            }
+                          }}
+                          onDragEnd={() => {
+                            setDraggingStageId(null);
+                            setDragOverStageId(null);
+                          }}
+                          className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-grab active:cursor-grabbing flex-shrink-0"
+                          aria-label={`Reordenar etapa: ${stage.label}`}
+                          title="Arraste para reordenar"
+                        >
+                          <GripVertical size={18} aria-hidden="true" />
+                        </button>
 
                         {/* Color Picker */}
                         <div className="relative flex-shrink-0">
@@ -421,10 +605,10 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
                   ))}
                 </div>
               </div>
-            </div>
+          </div>
 
-            {/* Footer */}
-            <div className="flex justify-end gap-3 p-6 border-t border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5">
+          {/* Footer */}
+          <div className={`${MODAL_FOOTER_CLASS} flex justify-end gap-3`}>
               <button
                 onClick={onClose}
                 className="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 rounded-lg transition-colors focus-visible-ring"
@@ -438,10 +622,9 @@ export const CreateBoardModal: React.FC<CreateBoardModalProps> = ({
               >
                 {editingBoard ? 'Salvar Alterações' : 'Criar Board'}
               </button>
-            </div>
           </div>
         </div>
-      </FocusTrap>
+      </Modal>
 
       <LifecycleSettingsModal
         isOpen={isLifecycleModalOpen}

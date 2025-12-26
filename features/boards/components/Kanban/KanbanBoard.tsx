@@ -1,10 +1,52 @@
-import React, { useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { DealView, BoardStage } from '@/types';
 import { DealCard } from './DealCard';
 import { isDealRotting, getActivityStatus } from '@/features/boards/hooks/useBoardsController';
 import { MoveToStageModal } from '../Modals/MoveToStageModal';
 
 import { useCRM } from '@/context/CRMContext';
+
+/**
+ * UI: Drop highlight should follow the stage color.
+ *
+ * Note on Tailwind: stage colors come from persisted values like `bg-blue-500`.
+ * Tailwind only generates classes it can “see” in source, so we map to a finite set
+ * of explicit `border-<color>-500`, `bg-<color>-100/20`, and `shadow-<color>-500/30` classes here.
+ */
+function dropHighlightClasses(stageBgClass?: string): string {
+  const c = (stageBgClass ?? '').toLowerCase();
+
+  if (c.includes('blue') || c.includes('sky') || c.includes('cyan')) {
+    return 'border-blue-500 bg-blue-100/20 dark:bg-blue-900/30 shadow-xl shadow-blue-500/30';
+  }
+  if (c.includes('green') || c.includes('emerald')) {
+    return 'border-emerald-500 bg-emerald-100/20 dark:bg-emerald-900/30 shadow-xl shadow-emerald-500/30';
+  }
+  if (c.includes('yellow') || c.includes('amber')) {
+    return 'border-amber-500 bg-amber-100/20 dark:bg-amber-900/30 shadow-xl shadow-amber-500/30';
+  }
+  if (c.includes('orange')) {
+    return 'border-orange-500 bg-orange-100/20 dark:bg-orange-900/30 shadow-xl shadow-orange-500/30';
+  }
+  if (c.includes('red')) {
+    return 'border-red-500 bg-red-100/20 dark:bg-red-900/30 shadow-xl shadow-red-500/30';
+  }
+  if (c.includes('violet') || c.includes('purple')) {
+    return 'border-violet-500 bg-violet-100/20 dark:bg-violet-900/30 shadow-xl shadow-violet-500/30';
+  }
+  if (c.includes('pink') || c.includes('rose')) {
+    return 'border-pink-500 bg-pink-100/20 dark:bg-pink-900/30 shadow-xl shadow-pink-500/30';
+  }
+  if (c.includes('indigo')) {
+    return 'border-indigo-500 bg-indigo-100/20 dark:bg-indigo-900/30 shadow-xl shadow-indigo-500/30';
+  }
+  if (c.includes('teal')) {
+    return 'border-teal-500 bg-teal-100/20 dark:bg-teal-900/30 shadow-xl shadow-teal-500/30';
+  }
+
+  // Fallback: keep existing behavior-ish (green).
+  return 'border-emerald-500 bg-emerald-100/20 dark:bg-emerald-900/30 shadow-xl shadow-emerald-500/30';
+}
 
 interface KanbanBoardProps {
   stages: BoardStage[];
@@ -49,17 +91,58 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
     currentStageId: string;
   } | null>(null);
 
-  // Handler to open move-to-stage modal
-  const handleOpenMoveToStage = (dealId: string) => {
-    const deal = filteredDeals.find(d => d.id === dealId);
-    if (deal) {
-      setMoveToStageModal({
-        isOpen: true,
-        deal,
-        currentStageId: deal.status,
-      });
+  /**
+   * Performance: o Kanban renderiza listas grandes. Evitamos padrões O(S*N) no render:
+   * - Antes: para cada stage, fazia `filteredDeals.filter(...)` + `reduce(...)`.
+   * - Agora: agrupamos 1 vez (O(N)) e só lemos por stage (O(S)).
+   */
+  const dealsByStageId = useMemo(() => {
+    const map = new Map<string, DealView[]>();
+    const totals = new Map<string, number>();
+    for (const deal of filteredDeals) {
+      const list = map.get(deal.status);
+      if (list) list.push(deal);
+      else map.set(deal.status, [deal]);
+
+      totals.set(deal.status, (totals.get(deal.status) ?? 0) + (deal.value ?? 0));
     }
-  };
+    return { map, totals };
+  }, [filteredDeals]);
+
+  // Performance: evita `find` por stage (O(S*L)). Map é O(1) por lookup.
+  const lifecycleStageNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const ls of lifecycleStages ?? []) {
+      if (ls?.id && ls?.name) map.set(ls.id, ls.name);
+    }
+    return map;
+  }, [lifecycleStages]);
+
+  // Performance: index deals by id once so callbacks can stay stable across menu toggles.
+  const dealsById = useMemo(() => new Map(filteredDeals.map((d) => [d.id, d])), [filteredDeals]);
+
+  // Performance: keep selection callback stable so DealCard can be memoized.
+  const handleSelectDeal = useCallback(
+    (dealId: string) => {
+      setSelectedDealId(dealId);
+    },
+    [setSelectedDealId]
+  );
+
+  // Handler to open move-to-stage modal (stable across re-renders when only menu state changes)
+  const handleOpenMoveToStage = useCallback(
+    (dealId: string) => {
+      const deal = dealsById.get(dealId);
+      if (deal) {
+        setMoveToStageModal({
+          isOpen: true,
+          deal,
+          currentStageId: deal.status,
+        });
+      }
+    },
+    [dealsById]
+  );
 
   // Handler to confirm move to a new stage
   const handleConfirmMoveToStage = (dealId: string, newStageId: string) => {
@@ -72,14 +155,14 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   return (
     <div className="flex gap-4 h-full overflow-x-auto pb-2 w-full">
       {stages.map(stage => {
-        const stageDeals = filteredDeals.filter(l => l.status === stage.id);
-        const stageValue = stageDeals.reduce((sum, l) => sum + l.value, 0);
+        const stageDeals = dealsByStageId.map.get(stage.id) ?? [];
+        const stageValue = dealsByStageId.totals.get(stage.id) ?? 0;
         const isOver = dragOverStage === stage.id && draggingId !== null;
 
         // Resolve linked stage name
         const linkedStageName =
-          stage.linkedLifecycleStage && lifecycleStages
-            ? lifecycleStages.find(ls => ls.id === stage.linkedLifecycleStage)?.name
+          stage.linkedLifecycleStage
+            ? lifecycleStageNameById.get(stage.linkedLifecycleStage) ?? null
             : null;
 
         return (
@@ -97,7 +180,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
             onDragLeave={() => setDragOverStage(null)}
             className={`min-w-[20rem] flex-1 flex flex-col rounded-xl border-2 overflow-visible h-full max-h-full transition-all duration-200
                             ${isOver
-                ? 'border-green-500 bg-green-100/20 dark:bg-green-900/30 scale-[1.02] shadow-xl shadow-green-500/30'
+                ? `${dropHighlightClasses(stage.color)} scale-[1.02]`
                 : 'border-slate-200/50 dark:border-white/10 glass'
               }
                         `}
@@ -163,8 +246,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                   activityStatus={getActivityStatus(deal)}
                   isDragging={draggingId === deal.id}
                   onDragStart={handleDragStart}
-                  onClick={() => setSelectedDealId(deal.id)}
-                  openMenuId={openActivityMenuId}
+                  onSelect={handleSelectDeal}
+                  // Performance: avoid passing openMenuId (string) to all cards.
+                  // Only 1–2 cards will flip `isMenuOpen` when the menu is toggled.
+                  isMenuOpen={openActivityMenuId === deal.id}
                   setOpenMenuId={setOpenActivityMenuId}
                   onQuickAddActivity={handleQuickAddActivity}
                   setLastMouseDownDealId={setLastMouseDownDealId}

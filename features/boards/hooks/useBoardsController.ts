@@ -103,31 +103,45 @@ export const useBoardsController = () => {
 
   // Set AI Context for Board (FULL CONTEXT)
   useEffect(() => {
-    console.log('[BoardsController] useEffect running:', {
-      hasActiveBoard: !!activeBoard,
-      activeBoardId: activeBoard?.id,
-      activeBoardName: activeBoard?.name,
-      dealsCount: deals.length
-    });
+    // Performance: noisy logging and object allocation isn't useful in production.
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[BoardsController] useEffect running:', {
+        hasActiveBoard: !!activeBoard,
+        activeBoardId: activeBoard?.id,
+        activeBoardName: activeBoard?.name,
+        dealsCount: deals.length,
+      });
+    }
 
     if (activeBoard) {
-      // Calculate deals per stage
+      // Performance: avoid O(S*N) by indexing stages once and scanning deals once.
+      const stageIdToLabel = new Map<string, string>();
       const dealsPerStage: Record<string, number> = {};
-      activeBoard.stages.forEach(stage => {
-        dealsPerStage[stage.label] = deals.filter(d => d.status === stage.id).length;
-      });
+      for (const stage of activeBoard.stages) {
+        stageIdToLabel.set(stage.id, stage.label);
+        dealsPerStage[stage.label] = 0;
+      }
 
-      // Calculate stagnant deals (rotting > 10 days)
-      const stagnantDeals = deals.filter(isDealRotting).length;
+      let pipelineValue = 0;
+      let stagnantDeals = 0;
+      let overdueDeals = 0;
 
-      // Calculate overdue activities
-      const overdueDeals = deals.filter(d => d.nextActivity?.isOverdue).length;
+      for (const d of deals) {
+        pipelineValue += d.value ?? 0;
+        if (isDealRotting(d)) stagnantDeals += 1;
+        if (d.nextActivity?.isOverdue) overdueDeals += 1;
 
-      // Find won/lost stage labels
-      const wonStageLabel = activeBoard.stages.find(s => s.id === activeBoard.wonStageId)?.label;
-      const lostStageLabel = activeBoard.stages.find(s => s.id === activeBoard.lostStageId)?.label;
+        const label = stageIdToLabel.get(d.status);
+        if (label) dealsPerStage[label] = (dealsPerStage[label] ?? 0) + 1;
+      }
 
-      console.log('[BoardsController] 🎯 Setting AI Context for board:', activeBoard.id, activeBoard.name);
+      // Performance: avoid `find` for won/lost labels.
+      const wonStageLabel = activeBoard.wonStageId ? stageIdToLabel.get(activeBoard.wonStageId) : undefined;
+      const lostStageLabel = activeBoard.lostStageId ? stageIdToLabel.get(activeBoard.lostStageId) : undefined;
+
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[BoardsController] 🎯 Setting AI Context for board:', activeBoard.id, activeBoard.name);
+      }
 
       setContext({
         view: { type: 'kanban', name: activeBoard.name, url: `/boards/${activeBoard.id}` },
@@ -150,7 +164,7 @@ export const useBoardsController = () => {
 
             // Metrics
             dealCount: deals.length,
-            pipelineValue: deals.reduce((acc, d) => acc + d.value, 0),
+            pipelineValue,
             dealsPerStage,
             stagnantDeals,
             overdueDeals,
@@ -475,6 +489,37 @@ export const useBoardsController = () => {
     });
   };
 
+  /**
+   * Async variant used for flows that must preserve order (ex.: importing a Journey JSON).
+   * Uses mutateAsync to allow sequential creation without race conditions.
+   */
+  const createBoardAsync = async (boardData: Omit<Board, 'id' | 'createdAt'>, order?: number) => {
+    try {
+      const newBoard = await createBoardMutation.mutateAsync({ board: boardData, order });
+      return newBoard;
+    } catch (error) {
+      const err = error as Error;
+      console.error('[createBoardAsync] Error:', err);
+      addToast(err.message || 'Erro ao criar board', 'error');
+      throw err;
+    }
+  };
+
+  /**
+   * Async variant used for flows that must update boards after creation
+   * (ex.: installing an official Journey and linking boards via nextBoardId).
+   */
+  const updateBoardAsync = async (id: string, updates: Partial<Board>) => {
+    try {
+      await updateBoardMutation.mutateAsync({ id, updates });
+    } catch (error) {
+      const err = error as Error;
+      console.error('[updateBoardAsync] Error:', err);
+      addToast(err.message || 'Erro ao atualizar board', 'error');
+      throw err;
+    }
+  };
+
   const handleEditBoard = (board: Board) => {
     setEditingBoard(board);
     setIsCreateBoardModalOpen(true);
@@ -617,6 +662,8 @@ export const useBoardsController = () => {
     activeBoardId: effectiveActiveBoardId, // Sempre retorna o ID válido
     handleSelectBoard,
     handleCreateBoard,
+    createBoardAsync,
+    updateBoardAsync,
     handleEditBoard,
     handleUpdateBoard,
     handleDeleteBoard,

@@ -10,6 +10,8 @@ import { KanbanList } from './Kanban/KanbanList';
 import { DeleteBoardModal } from './Modals/DeleteBoardModal';
 import { LossReasonModal } from '@/components/ui/LossReasonModal';
 import { DealView, CustomFieldDefinition, Board, BoardStage } from '@/types';
+import { ExportTemplateModal } from './Modals/ExportTemplateModal';
+import { useAuth } from '@/context/AuthContext';
 
 interface PipelineViewProps {
   // Boards
@@ -18,6 +20,8 @@ interface PipelineViewProps {
   activeBoardId: string | null;
   handleSelectBoard: (id: string) => void;
   handleCreateBoard: (board: Omit<Board, 'id' | 'createdAt'>, order?: number) => void;
+  createBoardAsync?: (board: Omit<Board, 'id' | 'createdAt'>, order?: number) => Promise<Board>;
+  updateBoardAsync?: (id: string, updates: Partial<Board>) => Promise<void>;
   handleEditBoard: (board: Board) => void;
   handleUpdateBoard: (board: Omit<Board, 'id' | 'createdAt'>) => void;
   handleDeleteBoard: (id: string) => void;
@@ -80,6 +84,8 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
   activeBoardId,
   handleSelectBoard,
   handleCreateBoard,
+  createBoardAsync,
+  updateBoardAsync,
   handleEditBoard,
   handleUpdateBoard,
   handleDeleteBoard,
@@ -124,6 +130,10 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
   handleLossReasonConfirm,
   handleLossReasonClose,
 }) => {
+  const { profile } = useAuth();
+  const isAdmin = profile?.role === 'admin';
+  const [isExportModalOpen, setIsExportModalOpen] = React.useState(false);
+
   const handleUpdateStage = (updatedStage: BoardStage) => {
     if (!activeBoard) return;
     const newStages = activeBoard.stages.map(s => (s.id === updatedStage.id ? updatedStage : s));
@@ -166,6 +176,7 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
             onCreateBoard={() => setIsWizardOpen(true)}
             onEditBoard={handleEditBoard}
             onDeleteBoard={handleDeleteBoard}
+            onExportTemplates={isAdmin ? () => setIsExportModalOpen(true) : undefined}
             viewMode={viewMode}
             setViewMode={setViewMode}
             searchTerm={searchTerm}
@@ -232,12 +243,15 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
         onSave={editingBoard ? handleUpdateBoard : handleCreateBoard}
         editingBoard={editingBoard || undefined}
         availableBoards={boards}
+        onSwitchEditingBoard={handleEditBoard}
       />
 
       <BoardCreationWizard
         isOpen={isWizardOpen}
         onClose={() => setIsWizardOpen(false)}
         onCreate={handleCreateBoard}
+        onCreateBoardAsync={createBoardAsync}
+        onUpdateBoardAsync={updateBoardAsync}
         onOpenCustomModal={() => setIsCreateBoardModalOpen(true)}
       />
 
@@ -258,6 +272,16 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
         onConfirm={handleLossReasonConfirm}
         dealTitle={lossReasonModal?.dealTitle}
       />
+
+      {activeBoard && (
+        <ExportTemplateModal
+          isOpen={isExportModalOpen}
+          onClose={() => setIsExportModalOpen(false)}
+          boards={boards}
+          activeBoard={activeBoard}
+          onCreateBoardAsync={createBoardAsync}
+        />
+      )}
     </div>
   );
 };

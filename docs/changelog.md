@@ -1,6 +1,97 @@
 # Changelog
 
+## 25/12/2025
+
+- **Settings (IA)**:
+  - UI de configuração de IA mais compacta (redução de paddings/margens para não “inflar” a tela).
+  - Bloco de **Consentimento LGPD** agora inicia **colapsado quando já existe API key** salva e **colapsa automaticamente após salvar** uma key válida.
+  - Toggle **“IA ativa na organização”** (admin): permite desligar/ligar IA para toda a equipe; endpoints `/api/ai/*` respeitam e bloqueiam chamadas quando desligado.
+  - Segurança: `GET /api/settings/ai` não retorna mais as **API keys** para membros (não-admin); apenas flags “tem key configurada”.
+  - Flags por função: admin pode habilitar/desabilitar funções específicas de IA (script, briefing, análise, e-mail, objeções, boards, chat do agente).
+
+- **Central de I.A (Configurações)**:
+  - Nova aba/rota `/settings/ai` para concentrar tudo relacionado a IA (configuração + prompts).
+  - Ajustados links internos para apontar para `/settings/ai#ai-config`.
+  - Toggle “IA ativa na organização” movido para o topo da Central (sempre visível); admin-only.
+- **Central de I.A (Prompts)**:
+  - UI redesenhada para ficar mais “produto”: busca, filtro por categoria, lista compacta e detalhes sob demanda.
+  - Refinamento adicional: ações mais discretas (ícones), “Reset” só aparece quando há override e detalhes mostram variáveis como chips.
+  - Ajuste final: lista estilo “tabela” com colunas alinhadas e ações **somente com ícones** (Reset aparece só no hover).
+  - Refinamento visual: padrão “iOS Settings” (segmented control, lista agrupada com cells, ações como glyphs sem caixas).
+  - Atalho “Funções de IA” na área de Prompts para rolar direto até os toggles por função.
+- **CRUD inicial de Prompts (por organização)**:
+  - Migration `supabase/migrations/20251225000000_ai_prompts.sql` cria `ai_prompt_templates` com versionamento simples (1 ativo por `key`).
+  - APIs `app/api/settings/ai-prompts` (listar overrides ativos + salvar nova versão) e `app/api/settings/ai-prompts/[key]` (listar versões + reset).
+  - UI `features/settings/components/AIPromptsManager.tsx` para editar override e resetar.
+- **Integração backend com prompts editáveis**:
+  - Rotas `app/api/ai/tasks/*` e parte de `app/api/ai/actions` passaram a resolver prompt via catálogo + override (`lib/ai/prompts/*`), permitindo mudar comportamento sem deploy.
+
+- **Jornada “Máquina de Vendas B2B (Completa)”**:
+  - Adicionado o estágio/board **CS & Upsell** (4ª etapa), fechando o ciclo pós-onboarding dentro da jornada oficial.
+  - Instalação da jornada oficial agora preenche `linkedLifecycleStage` **no nível do board** (além do `linkedLifecycleStage` já existente nas colunas/estágios), deixando os boards “interligados” pelo lifecycle no runtime.
+  - Instalação da jornada (oficial e community) agora também encadeia o fluxo via `nextBoardId` (SDR → Vendas → Onboarding → CS), permitindo **handoff automático** quando o deal atinge o estágio de sucesso.
+  - Correção de regra de “ganho/perda”: quando o board define `wonStageId`/`lostStageId`, o sistema **prioriza esses IDs** (fallback para `linkedLifecycleStage` apenas se não houver configuração) — evita disparos indevidos em boards como Onboarding.
+  - Fix de multi-tenant: `boardsService` agora garante `organization_id` ao criar boards/estágios (inferindo do `profiles.organization_id` quando o caller não fornece), evitando falhas de criação de deals (“Organização não identificada…”).
+  - Fix de resiliência: `dealsService.create` agora tenta recuperar `organization_id` via `profiles` se o board estiver com `organization_id` vazio, e faz um repair best-effort do board em background.
+  - Fix (Next/React): removido warning de **hydration mismatch** no header (botão de debug) inicializando o estado do debug de forma determinística no SSR e sincronizando com `localStorage` somente no client.
+  - Fix (Settings): “💣 Zerar Database” agora limpa primeiro `boards.won_stage_id/lost_stage_id/next_board_id` antes de deletar `board_stages`, evitando erro de FK (`boards_won_stage_id_fkey`).
+  - Templates (mercado): CS foi separado em **CS (Saúde da Conta)** (health/risk/churn) e **Expansão (Upsell)** virou um **pipeline comercial separado** na jornada B2B (não auto-encadeado por padrão).
+  - Playbook: adicionado **Infoprodutor (Completo)** como jornada oficial e uma opção de instalação **“Incluir Renovações (Assinatura)”** antes de instalar (board opcional).
+  - Playbook: ajustado **Funil de Vendas Simples** para labels mais diretas: **Novo → Em conversa → Proposta → Ganho → Perdido**.
+  - Playbook (Infoprodutor): defaults de **Won/Lost** agora são aplicados automaticamente na instalação (ex.: “Matriculado” em Vendas, “Primeiro Resultado” no Onboarding, “Upsell Fechado” em Expansão, “Renovado” em Renovações; CS Health usa “Arquivar” e “Churn”).
+  - UX (Boards): no modal **Editar Board**, agora é possível **trocar o board sendo editado** por um seletor, evitando o fluxo “fechar → engrenagem → abrir outro board”.
+  - Playbook (Infoprodutor): board opcional **Renovações (Assinatura)** agora é criado como **“6. Renovações (Assinatura)”** para manter a lista numerada.
+  - UX (Boards): modal **Criar Novo Board** agora é **responsivo em telas menores** (mobile quase full-screen com scroll interno; modo chat vira coluna no mobile e só divide em 2 colunas no desktop).
+  - UX (Boards): refinado sizing do modal do Wizard para não “inflar” em telas maiores (mobile `h-full`, desktop `h-auto` + `max-w` menor).
+  - UX (Boards): modal do Wizard agora tem **hard cap por viewport** (`max-w: calc(100vw - padding)` / `max-h: calc(100dvh - padding)`) para evitar overflow em telas pequenas.
+  - UX (Boards): Wizard “Criar Novo Board” ganhou tela inicial **Jobs-style** (3 escolhas grandes: do zero / playbook recomendado / template individual) e só depois mostra as listas, reduzindo fricção e “poluição” visual.
+  - UX (Boards): tela inicial do Wizard foi **compactada** (formato “chooser”) e agora dá **destaque ao Criar com IA** como CTA primário.
+  - UX (Modais): criado um conjunto de **tokens de modal** (`components/ui/modalStyles.ts`) e o `components/ui/Modal.tsx` passou a usá-los; modais de Boards foram alinhados para manter consistência (overlay, padding, radius, viewport cap e foco).
+  - UX (Boards): Wizard “Criar Novo Board” agora mantém o **modo browse compacto** (mesma filosofia da home) e removeu o **footer vazio** no step de seleção para evitar “espaço morto” e sensação de modal gigante.
+  - UX (Boards): corrigido conflito de `max-w` no Wizard (o `lg:max-w-5xl` estava vencendo e mantendo o modal largo mesmo no browse); agora o `max-w` é calculado sem classes conflitantes.
+  - UX (Boards): browse do Wizard (Playbooks/Templates/Comunidade) agora usa **`max-w-2xl`** para ficar mais “picker” e menos “página”.
+  - UX (Boards): modal “Criar board em branco” agora tem **scroll interno com `max-h` por viewport**, evitando estourar a área visível em telas menores e mantendo o footer sempre acessível.
+  - UX (Boards): preview/criação via **IA** agora normaliza cores das colunas usando uma **paleta fixa** (Tailwind não gera classes dinâmicas vindas da IA em runtime), garantindo que os boards gerados venham com cores visíveis.
+  - UX (Modais): overlay de modal agora usa **z-index alto** para nunca ficar atrás da sidebar; “Refinar com IA” foi reduzido para não parecer página cheia.
+  - UX (Deals): `DealDetailModal` agora **fecha ao clicar fora** (backdrop click) e usa **z-index alto** para não ficar atrás da sidebar.
+  - UX (Boards): modal **Editar Board** agora permite **reordenar etapas via drag-and-drop** (sem libs externas).
+  - UX (Boards): drag-and-drop no modal **Editar Board** agora exibe **preview do item sendo arrastado** + estilo visual durante o drag (opacidade/sombra), evitando a sensação de “não está funcionando”.
+  - UX (Deals): textos de prioridade agora são normalizados para **PT-BR** (Baixa/Média/Alta) em todas as telas.
+  - UX (Cockpit): rota `/deals/[dealId]/cockpit` agora abre o **cockpit “original” do modo Focus (Inbox)**. A V2 ficou isolada em `/deals/[dealId]/cockpit-v2` e `/labs/deal-cockpit-mock`.
+  - UX (Deals): removido o botão **Cockpit** do modal de detalhes do deal (mantemos o cockpit pelo modo Focus).
+  - UX (Deals): barra de estágios no modal do deal agora aparece como **linha do tempo (status)** — mais baixa e discreta, evitando parecer um “menu”.
+  - UX (Deals): refinada a “linha do tempo” de estágios (estilo mais clean): **apenas o estágio atual em cor**, demais neutros, conectores discretos e interação sem “cara de botão”.
+  - UX (Deals): ícones no composer de nota do modal do deal agora funcionam: **modelo de nota** (documento) e **ditado por voz** com feedback quando o navegador bloquear permissão.
+  - UX (Deals): removidos temporariamente os ícones do composer de nota (modelo/ditado) até definirmos a UX final.
+  - Feature (Produtos): adicionado catálogo em **Configurações → Produtos/Serviços** (CRUD básico) e suporte a **item personalizado** no deal (quando o produto depende do cliente).
+  - Feature (Produtos): catálogo agora permite **editar** produto (nome, preço, SKU, descrição).
+  - Feature (Boards): suporte a **produto padrão por board** (configurável no “Editar Board” e sugerido no modal do deal).
+
 ## 24/12/2025
+
+- **Kanban (UX)**:
+  - Contorno/realce de drop ao arrastar deals agora **segue a cor do estágio** (em vez de ser sempre verde), mantendo consistência visual no pipeline.
+  - Implementação via mapeamento explícito de classes Tailwind para evitar classes dinâmicas não geradas no build.
+  - Modal de deal agora tem atalho **Cockpit** para abrir `/deals/[dealId]/cockpit` diretamente.
+  - Inbox Focus: restaurado o botão “Ver detalhes” (pulsar) mesmo quando uma atividade vier sem `dealId`, usando fallback por `dealTitle` para resolver o deal.
+  - Inbox Focus: reforçada a resolução de contexto quando `dealTitle` vem vazio (extração do nome do contato a partir de títulos comuns como “cliente: Nome”/“cliente Nome”, e normalização de títulos para matching mais robusto).
+  - Inbox Focus: “Ver detalhes” volta a aparecer **mesmo sem deal/contato resolvido**; quando não há contexto, abre um painel rápido para **vincular um negócio manualmente** e então abrir o Cockpit.
+  - Cockpit: tecla **ESC** volta a fechar o overlay mesmo com foco em inputs (listener em capture no `FocusContextPanel`).
+  - Settings (IA): “Outro (Digitar ID)” agora permite **digitar e salvar** um `modelId` customizado (não tenta mais salvar `aiModel=''`, que era rejeitado pelo backend).
+    - Correção adicional: o `<select>` agora tem **estado de UI próprio**, então ao selecionar “Outro” o input aparece imediatamente (antes o select era controlado só por `aiModel` e “voltava”).
+  - Kanban templates: ao aplicar templates (Modal e Wizard), o sistema agora **auto-preenche** `wonStageId`/`lostStageId` usando labels determinísticas do template (ex.: “Ganho”/“Perdido”, “Churn”), com fallback heurístico por nome.
+  - Kanban templates: adicionado **export de Board/Jornada** (gera arquivo JSON do template) e **import local** (upload/colar JSON) para instalar sem GitHub.
+    - Correção: download via Blob URL agora é compatível com Safari (não revoga o URL imediatamente; fallback para abrir em nova aba).
+    - Correção: `slugify()` do export agora evita regex avançada (unicode property escapes) para não quebrar em alguns browsers; o click de download passou a ter try/catch + toast de erro.
+    - Diagnóstico: export agora mostra preview do `journey.json`, permite **copiar JSON**, e loga no console os parâmetros do download para rastrear bloqueios do navegador.
+    - UX: ao selecionar boards para exportar uma jornada, a ordem exportada agora segue a ordem exibida na lista (em vez de “ordem de clique”), e o modal mostra “Ordem que será exportada”.
+    - UX: ao abrir o modal, a seleção é automaticamente reordenada para seguir a lista (evita “ordem antiga” persistida entre aberturas).
+    - Feature: adicionado **Importar JSON (local)** no mesmo modal (upload/colar `journey.json`), com validação e instalação sequencial para preservar a ordem dos boards.
+    - UX: modal de templates agora tem layout mais limpo (header simplificado, largura maior e scroll interno) para evitar UI “desconjuntada”.
+    - UX: export/import do template agora é “para leigos” por padrão (ações principais em destaque e detalhes técnicos/JSON escondidos atrás de “Mostrar detalhes técnicos”).
+    - UX: export de template agora é sempre no formato **Jornada** (1 board = template simples; múltiplos = jornada). Removidos botões “Board/Jornada”.
+    - UX: modal de export reduzido (não precisa mais de largura extra após simplificações).
+    - UX: modal de export reduzido ainda mais para ficar mais compacto.
 
 - **Merge de branches e consolidação na `main`**:
   - Merge de `chore/migrate-ai-actions-to-tasks`: introdução de endpoints em `/api/ai/tasks/*` (boards/deals/inbox) e migração parcial de chamadas para o novo client (`lib/ai/tasksClient.ts`), removendo rotas legacy.

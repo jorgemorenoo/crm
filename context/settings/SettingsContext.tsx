@@ -8,7 +8,7 @@ import React, {
   ReactNode,
 } from 'react';
 import { LifecycleStage, Product, CustomFieldDefinition, Lead } from '@/types';
-import { settingsService, lifecycleStagesService } from '@/lib/supabase';
+import { settingsService, lifecycleStagesService, productsService } from '@/lib/supabase';
 import { useAuth } from '../AuthContext';
 
 const DEFAULT_LIFECYCLE_STAGES: LifecycleStage[] = [
@@ -40,8 +40,10 @@ interface SettingsContextType {
   deleteLifecycleStage: (id: string, contacts: any[]) => Promise<void>;
   reorderLifecycleStages: (newOrder: LifecycleStage[]) => Promise<void>;
 
-  // Products (TODO: migrate to Supabase)
+  // Products (Catálogo)
   products: Product[];
+  /** Recarrega o catálogo de produtos (usado para manter o dropdown do deal atualizado). */
+  refreshProducts: () => Promise<void>;
 
   // Custom Fields (TODO: migrate to Supabase)
   customFieldDefinitions: CustomFieldDefinition[];
@@ -64,6 +66,14 @@ interface SettingsContextType {
   aiAnthropicKey: string;
   aiModel: string;
   setAiModel: (model: string) => Promise<void>;
+  /** Toggle org-wide: admin controla se IA está ativa para a organização */
+  aiOrgEnabled: boolean;
+  setAiOrgEnabled: (enabled: boolean) => Promise<void>;
+  /** True quando a organização tem uma key configurada para o provider atual (sem expor o segredo ao membro). */
+  aiKeyConfigured: boolean;
+  /** Feature flags (org-wide) para habilitar/desabilitar funções específicas de IA. */
+  aiFeatureFlags: Record<string, boolean>;
+  setAIFeatureFlag: (key: string, enabled: boolean) => Promise<void>;
   aiThinking: boolean;
   setAiThinking: (enabled: boolean) => Promise<void>;
   aiSearch: boolean;
@@ -95,10 +105,23 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lifecycleStages, setLifecycleStages] = useState<LifecycleStage[]>(DEFAULT_LIFECYCLE_STAGES);
-  const [products] = useState<Product[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [customFieldDefinitions, setCustomFieldDefinitions] = useState<CustomFieldDefinition[]>([]);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
+
+  const refreshProducts = useCallback(async () => {
+    try {
+      const res = await productsService.getActive();
+      if (res.error) {
+        console.warn('[Settings] Falha ao carregar produtos:', res.error.message);
+        return;
+      }
+      setProducts(res.data);
+    } catch (e) {
+      console.warn('[Settings] Falha ao carregar produtos:', e);
+    }
+  }, []);
 
   // AI Config state - separate keys per provider
   const [aiProvider, setAiProviderState] = useState<AIConfig['provider']>('google');
@@ -106,6 +129,11 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
   const [aiOpenaiKey, setAiOpenaiKeyState] = useState<string>('');
   const [aiAnthropicKey, setAiAnthropicKeyState] = useState<string>('');
   const [aiModel, setAiModelState] = useState<string>('gemini-2.5-flash');
+  const [aiOrgEnabled, setAiOrgEnabledState] = useState<boolean>(true);
+  const [aiHasGoogleKey, setAiHasGoogleKey] = useState<boolean>(false);
+  const [aiHasOpenaiKey, setAiHasOpenaiKey] = useState<boolean>(false);
+  const [aiHasAnthropicKey, setAiHasAnthropicKey] = useState<boolean>(false);
+  const [aiFeatureFlags, setAiFeatureFlags] = useState<Record<string, boolean>>({});
   const [aiThinking, setAiThinkingState] = useState<boolean>(true);
   const [aiSearch, setAiSearchState] = useState<boolean>(true);
   const [aiAnthropicCaching, setAiAnthropicCachingState] = useState<boolean>(false);
@@ -119,6 +147,15 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
       default: return '';
     }
   }, [aiProvider, aiGoogleKey, aiOpenaiKey, aiAnthropicKey]);
+
+  const aiKeyConfigured = useMemo(() => {
+    switch (aiProvider) {
+      case 'google': return aiHasGoogleKey || Boolean(aiGoogleKey && aiGoogleKey.trim());
+      case 'openai': return aiHasOpenaiKey || Boolean(aiOpenaiKey && aiOpenaiKey.trim());
+      case 'anthropic': return aiHasAnthropicKey || Boolean(aiAnthropicKey && aiAnthropicKey.trim());
+      default: return false;
+    }
+  }, [aiProvider, aiHasGoogleKey, aiHasOpenaiKey, aiHasAnthropicKey, aiGoogleKey, aiOpenaiKey, aiAnthropicKey]);
 
   // UI State
   const [isGlobalAIOpen, setIsGlobalAIOpen] = useState(false);
@@ -151,18 +188,26 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
 
       if (aiRes.ok) {
         const aiData = (await aiRes.json()) as {
+          aiEnabled: boolean;
           aiProvider: AIConfig['provider'];
           aiModel: string;
           aiGoogleKey: string;
           aiOpenaiKey: string;
           aiAnthropicKey: string;
+          aiHasGoogleKey?: boolean;
+          aiHasOpenaiKey?: boolean;
+          aiHasAnthropicKey?: boolean;
         };
 
+        setAiOrgEnabledState(typeof aiData.aiEnabled === 'boolean' ? aiData.aiEnabled : true);
         setAiProviderState(aiData.aiProvider);
         setAiModelState(aiData.aiModel);
         setAiGoogleKeyState(aiData.aiGoogleKey);
         setAiOpenaiKeyState(aiData.aiOpenaiKey);
         setAiAnthropicKeyState(aiData.aiAnthropicKey);
+        setAiHasGoogleKey(Boolean(aiData.aiHasGoogleKey));
+        setAiHasOpenaiKey(Boolean(aiData.aiHasOpenaiKey));
+        setAiHasAnthropicKey(Boolean(aiData.aiHasAnthropicKey));
       } else {
         const body = await aiRes.json().catch(() => null);
         const message = body?.error || `Falha ao carregar config de IA (HTTP ${aiRes.status})`;
@@ -173,6 +218,22 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
       const { data: stages } = await lifecycleStagesService.getAll();
       if (stages && stages.length > 0) {
         setLifecycleStages(stages);
+      }
+
+      // Fetch products catalog (active only)
+      await refreshProducts();
+
+      // Fetch AI feature flags (org-wide)
+      const ffRes = await fetch('/api/settings/ai-features', {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+        credentials: 'include',
+      });
+      if (ffRes.ok) {
+        const ffData = (await ffRes.json().catch(() => null)) as any;
+        setAiFeatureFlags((ffData?.flags as Record<string, boolean>) || {});
+      } else {
+        console.warn('[Settings] Falha ao carregar flags de IA (features).', { status: ffRes.status });
       }
     } catch (e) {
       console.error('Error fetching settings:', e);
@@ -185,6 +246,16 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
   useEffect(() => {
     fetchSettings();
   }, [fetchSettings]);
+
+  // Allow UIs (ex.: Settings → Produtos) to notify the app to reload the catalog.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = () => {
+      refreshProducts();
+    };
+    window.addEventListener('crm:products-updated', handler as any);
+    return () => window.removeEventListener('crm:products-updated', handler as any);
+  }, [refreshProducts]);
 
   // Lifecycle Stages CRUD
   const addLifecycleStage = useCallback(
@@ -318,6 +389,35 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
     [updateOrgAISettings]
   );
 
+  const setAiOrgEnabled = useCallback(
+    async (enabled: boolean) => {
+      await updateOrgAISettings({ aiEnabled: enabled });
+      setAiOrgEnabledState(enabled);
+    },
+    [updateOrgAISettings]
+  );
+
+  const setAIFeatureFlag = useCallback(
+    async (key: string, enabled: boolean) => {
+      const res = await fetch('/api/settings/ai-features', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ key, enabled }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        const message = body?.error || `Falha ao salvar flag de IA (HTTP ${res.status})`;
+        setError(message);
+        throw new Error(message);
+      }
+
+      setAiFeatureFlags((prev) => ({ ...prev, [key]: enabled }));
+    },
+    []
+  );
+
   const setAiThinking = useCallback(
     async (enabled: boolean) => {
       setAiThinkingState(enabled);
@@ -390,6 +490,7 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
       deleteLifecycleStage,
       reorderLifecycleStages,
       products,
+      refreshProducts,
       customFieldDefinitions,
       addCustomField,
       updateCustomField,
@@ -406,6 +507,11 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
       aiAnthropicKey,
       aiModel,
       setAiModel,
+      aiOrgEnabled,
+      setAiOrgEnabled,
+      aiKeyConfigured,
+      aiFeatureFlags,
+      setAIFeatureFlag,
       aiThinking,
       setAiThinking,
       aiSearch,
@@ -430,6 +536,7 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
       deleteLifecycleStage,
       reorderLifecycleStages,
       products,
+      refreshProducts,
       customFieldDefinitions,
       addCustomField,
       updateCustomField,
@@ -446,6 +553,11 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
       aiAnthropicKey,
       aiModel,
       setAiModel,
+      aiOrgEnabled,
+      setAiOrgEnabled,
+      aiKeyConfigured,
+      aiFeatureFlags,
+      setAIFeatureFlag,
       aiThinking,
       setAiThinking,
       aiSearch,

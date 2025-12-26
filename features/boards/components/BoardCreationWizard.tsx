@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Sparkles, Loader2, Send, MessageSquare, LayoutTemplate, AlertCircle, Settings } from 'lucide-react';
+import { X, Sparkles, Loader2, Send, MessageSquare, LayoutTemplate, AlertCircle, Settings, Plus } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { BOARD_TEMPLATES, BoardTemplateType } from '@/board-templates';
 import {
@@ -13,15 +13,25 @@ import { AIProcessingModal, ProcessingStep, SimulatorPhase } from './Modals/AIPr
 import { fetchRegistry, fetchTemplateJourney } from '@/services/registryService';
 import { RegistryIndex, RegistryTemplate, JourneyDefinition } from '@/types';
 import { OFFICIAL_JOURNEYS } from '@/journey-templates';
+import { MODAL_OVERLAY_CLASS } from '@/components/ui/modalStyles';
 
 interface BoardCreationWizardProps {
   isOpen: boolean;
   onClose: () => void;
   onCreate: (board: Omit<Board, 'id' | 'createdAt'>, order?: number) => void;
+  /**
+   * Async create used for flows that must chain steps and then update boards
+   * (ex.: installing Journeys and linking boards via nextBoardId).
+   */
+  onCreateBoardAsync?: (board: Omit<Board, 'id' | 'createdAt'>, order?: number) => Promise<Board>;
+  /** Async update used to set nextBoardId after all boards are created. */
+  onUpdateBoardAsync?: (id: string, updates: Partial<Board>) => Promise<void>;
   onOpenCustomModal: () => void;
 }
 
 type WizardStep = 'select' | 'ai-input' | 'ai-preview' | 'playbook-preview';
+type SelectMode = 'home' | 'browse';
+type SelectBrowseFocus = 'playbooks' | 'templates' | 'community';
 
 interface ChatMessage {
   role: 'user' | 'ai';
@@ -29,10 +39,65 @@ interface ChatMessage {
   proposalData?: GeneratedBoard;
 }
 
+// IMPORTANT: Tailwind won't generate arbitrary class names returned by the AI at runtime.
+// Keep colors from a fixed palette so preview + created boards always have visible colors.
+const AI_STAGE_COLOR_PALETTE = [
+  'bg-blue-500',
+  'bg-green-500',
+  'bg-yellow-500',
+  'bg-orange-500',
+  'bg-red-500',
+  'bg-purple-500',
+  'bg-pink-500',
+  'bg-indigo-500',
+  'bg-teal-500',
+] as const;
+
+function normalizeAIStageColor(color: string | undefined, index: number) {
+  if (color && (AI_STAGE_COLOR_PALETTE as readonly string[]).includes(color)) return color;
+  return AI_STAGE_COLOR_PALETTE[index % AI_STAGE_COLOR_PALETTE.length];
+}
+
+function normalizeGeneratedBoardColors(board: GeneratedBoard): GeneratedBoard {
+  const stages = Array.isArray(board.stages) ? board.stages : [];
+  return {
+    ...board,
+    stages: stages.map((s, idx) => ({
+      ...s,
+      color: normalizeAIStageColor(s.color, idx),
+    })),
+  };
+}
+
+function normalizeStageLabel(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function guessWonLostStageIds(stages: BoardStage[], opts?: { wonLabel?: string; lostLabel?: string }) {
+  const byLabel = new Map<string, string>();
+  for (const s of stages) {
+    byLabel.set(normalizeStageLabel(s.label), s.id);
+  }
+
+  const exactWon = opts?.wonLabel ? byLabel.get(normalizeStageLabel(opts.wonLabel)) : undefined;
+  const exactLost = opts?.lostLabel ? byLabel.get(normalizeStageLabel(opts.lostLabel)) : undefined;
+
+  const heuristicWon =
+    exactWon
+    ?? stages.find(s => /\b(ganho|won|fechado ganho|conclu[ií]do)\b/i.test(s.label))?.id;
+  const heuristicLost =
+    exactLost
+    ?? stages.find(s => /\b(perdido|lost|churn|cancelad[oa])\b/i.test(s.label))?.id;
+
+  return { wonStageId: heuristicWon ?? '', lostStageId: heuristicLost ?? '' };
+}
+
 export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
   isOpen,
   onClose,
   onCreate,
+  onCreateBoardAsync,
+  onUpdateBoardAsync,
   onOpenCustomModal,
 }) => {
   const router = useRouter();
@@ -40,6 +105,8 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
     'select'
   );
   const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | null>(null);
+  // Optional journey flags (shown before installing certain journeys)
+  const [includeSubscriptionRenewals, setIncludeSubscriptionRenewals] = useState(false);
   const [aiInput, setAiInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedBoard, setGeneratedBoard] = useState<GeneratedBoard | null>(null);
@@ -62,6 +129,9 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
 
   // Registry State
   const [activeTab, setActiveTab] = useState<'official' | 'community'>('official');
+  // Jobs-style: progressive disclosure for the initial selection (reduces cognitive load).
+  const [selectMode, setSelectMode] = useState<SelectMode>('home');
+  const [selectBrowseFocus, setSelectBrowseFocus] = useState<SelectBrowseFocus>('playbooks');
   const [registryIndex, setRegistryIndex] = useState<RegistryIndex | null>(null);
   const [isLoadingRegistry, setIsLoadingRegistry] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
@@ -94,6 +164,62 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
     setChatMessages([]);
     setChatInput('');
     setSelectedPlaybookId(null); // Reset selected playbook
+    setIncludeSubscriptionRenewals(false);
+    setSelectMode('home');
+    setSelectBrowseFocus('playbooks');
+    setActiveTab('official');
+  };
+
+  const buildRenewalsBoard = () => {
+    return {
+      slug: 'renewals',
+      // UX: keep the journey list visually consistent (all boards are numbered).
+      // This board is inserted after "5. Upsell (Expansão)" when the optional flag is enabled.
+      name: '6. Renovações (Assinatura)',
+      columns: [
+        { name: '180+ dias', color: 'bg-blue-500', linkedLifecycleStage: 'CUSTOMER' },
+        { name: '120 dias', color: 'bg-purple-500', linkedLifecycleStage: 'CUSTOMER' },
+        { name: '90 dias', color: 'bg-yellow-500', linkedLifecycleStage: 'CUSTOMER' },
+        { name: '60 dias', color: 'bg-orange-500', linkedLifecycleStage: 'CUSTOMER' },
+        { name: '30 dias', color: 'bg-orange-500', linkedLifecycleStage: 'CUSTOMER' },
+        { name: 'Renovado (Ganho)', color: 'bg-green-500', linkedLifecycleStage: 'CUSTOMER' },
+        { name: 'Cancelado (Perdido)', color: 'bg-red-500', linkedLifecycleStage: 'OTHER' },
+      ],
+      strategy: {
+        agentPersona: {
+          name: 'CS Renewals',
+          role: 'Renovações',
+          behavior:
+            'Trate renovações com rigor comercial. Antecipe risco, mostre valor, alinhe stakeholders e remova fricção do pagamento.',
+        },
+        goal: {
+          description: 'Aumentar taxa de renovação e previsibilidade.',
+          kpi: 'Renewal Rate',
+          targetValue: '90',
+          type: 'percentage',
+        },
+        entryTrigger:
+          'Assinantes com data de renovação aproximando. (Pode ser criado manualmente ou via automação futura.)',
+      },
+    };
+  };
+
+  const getJourneyForInstall = (journeyId: string) => {
+    const base = OFFICIAL_JOURNEYS[journeyId];
+    if (!base) return null;
+
+    // Only Infoproducer exposes the optional "subscription renewals" step for now.
+    if (journeyId !== 'INFOPRODUCER' || !includeSubscriptionRenewals) return base;
+
+    // UX: for infoproducts, it's often easier to understand renewals as "after upsell",
+    // even though in practice it runs as a parallel cadence. We keep the board optional.
+    const renewalsBoard = buildRenewalsBoard();
+    const nextBoards = [...base.boards];
+    const expansionIndex = nextBoards.findIndex(b => b.slug === 'expansion');
+    const insertAt = expansionIndex >= 0 ? expansionIndex + 1 : nextBoards.length;
+    nextBoards.splice(insertAt, 0, renewalsBoard);
+
+    return { ...base, boards: nextBoards };
   };
 
   const handleTemplateSelect = (templateType: BoardTemplateType) => {
@@ -103,6 +229,11 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
       id: crypto.randomUUID(),
       ...s,
     }));
+
+    const guessed = guessWonLostStageIds(boardStages, {
+      wonLabel: template.defaultWonStageLabel,
+      lostLabel: template.defaultLostStageLabel,
+    });
 
     // Randomize Agent Name (Names ending in 'ia')
     const agentNames = [
@@ -126,6 +257,8 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
       template: templateType,
       stages: boardStages,
       isDefault: false,
+      wonStageId: (guessed.wonStageId || null) as any,
+      lostStageId: (guessed.lostStageId || null) as any,
       // Strategy Fields
       agentPersona: {
         ...template.agentPersona!,
@@ -145,6 +278,7 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
       const journey = await fetchTemplateJourney(templatePath);
 
       // Install all boards in the journey with sequential order
+      const createdBoards: Board[] = [];
       for (let i = 0; i < journey.boards.length; i++) {
         const boardDef = journey.boards[i];
         const boardStages: BoardStage[] = boardDef.columns.map(c => ({
@@ -154,18 +288,38 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
           linkedLifecycleStage: c.linkedLifecycleStage,
         }));
 
-        onCreate({
+        const guessed = guessWonLostStageIds(boardStages);
+        const inferredBoardLifecycleStage = boardDef.columns.find(c => c.linkedLifecycleStage)?.linkedLifecycleStage;
+
+        const payload: Omit<Board, 'id' | 'createdAt'> = {
           name: boardDef.name,
           description: `Parte da jornada: ${journey.boards.length > 1 ? 'Sim' : 'Não'}`,
-          linkedLifecycleStage: undefined, // Journey boards might have specific logic
+          // Community journeys may not declare board-level linkage. We infer it from the first column that has linkage.
+          linkedLifecycleStage: inferredBoardLifecycleStage,
           template: 'CUSTOM',
           stages: boardStages,
           isDefault: false,
+          wonStageId: guessed.wonStageId || undefined,
+          lostStageId: guessed.lostStageId || undefined,
           // Strategy
           agentPersona: boardDef.strategy?.agentPersona,
           goal: boardDef.strategy?.goal,
           entryTrigger: boardDef.strategy?.entryTrigger,
-        }, i); // Pass index as relative order
+        };
+
+        if (onCreateBoardAsync) {
+          const created = await onCreateBoardAsync(payload, i);
+          createdBoards.push(created);
+        } else {
+          onCreate(payload, i); // Pass index as relative order
+        }
+      }
+
+      // Link boards sequentially (handoff) when async updater is available.
+      if (onUpdateBoardAsync && createdBoards.length > 1) {
+        for (let i = 0; i < createdBoards.length - 1; i += 1) {
+          await onUpdateBoardAsync(createdBoards[i].id, { nextBoardId: createdBoards[i + 1].id });
+        }
       }
 
       onClose();
@@ -180,11 +334,42 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
 
   const handleInstallOfficialJourney = async (journeyId: string) => {
     if (!OFFICIAL_JOURNEYS) return;
-    const journey = OFFICIAL_JOURNEYS[journeyId];
+    const journey = getJourneyForInstall(journeyId);
     if (!journey) return;
+
+    const wonLostByJourneyAndSlug: Record<string, Record<string, { wonLabel?: string; lostLabel?: string; wonArchive?: boolean }>> = {
+      INFOPRODUCER: {
+        sales: { wonLabel: 'Matriculado (Ganho)', lostLabel: 'Não comprou (Perdido)' },
+        onboarding: { wonLabel: 'Primeiro Resultado (Ganho)' },
+        cs: { wonArchive: true, lostLabel: 'Churn' },
+        expansion: { wonLabel: 'Upsell Fechado (Ganho)', lostLabel: 'Perdido' },
+        renewals: { wonLabel: 'Renovado (Ganho)', lostLabel: 'Cancelado (Perdido)' },
+      },
+      B2B_MACHINE: {
+        onboarding: { wonLabel: 'Go Live' },
+        cs: { wonArchive: true, lostLabel: 'Churn' },
+        expansion: { wonLabel: 'Upsell Fechado', lostLabel: 'Perdido' },
+      },
+      SIMPLE_SALES: {
+        'sales-simple': { wonLabel: 'Ganho', lostLabel: 'Perdido' },
+      },
+    };
+
+    // For official journeys we can safely set the board-level lifecycle linkage,
+    // so the UI/analytics can understand the "handoff" between boards.
+    const boardLifecycleBySlug: Record<string, string | undefined> = {
+      sdr: BOARD_TEMPLATES.PRE_SALES.linkedLifecycleStage,
+      sales: BOARD_TEMPLATES.SALES.linkedLifecycleStage,
+      onboarding: BOARD_TEMPLATES.ONBOARDING.linkedLifecycleStage,
+      cs: BOARD_TEMPLATES.CS.linkedLifecycleStage,
+      renewals: 'CUSTOMER',
+      expansion: 'CUSTOMER',
+      'sales-simple': BOARD_TEMPLATES.SALES.linkedLifecycleStage,
+    };
 
     // Install all boards in the journey with sequential order
     // Each board gets an incrementing order to maintain sequence
+    const createdBoards: Board[] = [];
     for (let i = 0; i < journey.boards.length; i++) {
       const boardDef = journey.boards[i];
       const boardStages: BoardStage[] = boardDef.columns.map(c => ({
@@ -194,19 +379,71 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
         linkedLifecycleStage: c.linkedLifecycleStage,
       }));
 
+      const templateBySlug: Record<string, BoardTemplateType> = {
+        sdr: 'PRE_SALES',
+        sales: 'SALES',
+        onboarding: 'ONBOARDING',
+        cs: 'CS',
+        renewals: 'CUSTOM',
+        expansion: 'CUSTOM',
+        'sales-simple': 'SALES',
+      };
+      const template = BOARD_TEMPLATES[templateBySlug[boardDef.slug] ?? 'CUSTOM'];
+      const overrides = wonLostByJourneyAndSlug[journeyId]?.[boardDef.slug] || {};
+      const guessed = guessWonLostStageIds(boardStages, {
+        wonLabel: overrides.wonLabel ?? template.defaultWonStageLabel,
+        lostLabel: overrides.lostLabel ?? template.defaultLostStageLabel,
+      });
+
       // Pass index as order - this will be added to the current max order in the service
-      onCreate({
+      const payload: Omit<Board, 'id' | 'createdAt'> = {
         name: boardDef.name,
         description: `Parte da jornada: ${journey.boards.length > 1 ? 'Sim' : 'Não'}`,
-        linkedLifecycleStage: undefined,
+        linkedLifecycleStage: boardLifecycleBySlug[boardDef.slug],
         template: 'CUSTOM',
         stages: boardStages,
         isDefault: false,
+        wonStageId: overrides.wonArchive ? undefined : (guessed.wonStageId || undefined),
+        lostStageId: guessed.lostStageId || undefined,
+        wonStayInStage: overrides.wonArchive ? true : false,
         agentPersona: boardDef.strategy?.agentPersona,
         goal: boardDef.strategy?.goal,
         entryTrigger: boardDef.strategy?.entryTrigger,
-      }, i); // Pass index as relative order
+      };
+
+      if (onCreateBoardAsync) {
+        const created = await onCreateBoardAsync(payload, i);
+        createdBoards.push(created);
+      } else {
+        onCreate(payload, i); // Pass index as relative order
+      }
     }
+
+    // Link boards with an explicit handoff chain for official journeys.
+    // Market-aligned: keep the core revenue journey chained (SDR → Sales → Onboarding → CS Health).
+    // Expansion/Upsell is a separate commercial pipeline and should NOT be auto-chained by default.
+    if (onUpdateBoardAsync && createdBoards.length > 0) {
+      const bySlug = new Map<string, Board>();
+      for (let i = 0; i < createdBoards.length; i += 1) {
+        bySlug.set(journey.boards[i]?.slug, createdBoards[i]);
+      }
+
+      const chain: Array<[string, string | null]> = [
+        ['sdr', 'sales'],
+        ['sales', 'onboarding'],
+        ['onboarding', 'cs'],
+        ['cs', null],
+        // renewals + expansion intentionally left unlinked
+      ];
+
+      for (const [from, to] of chain) {
+        const fromBoard = bySlug.get(from);
+        if (!fromBoard) continue;
+        const toBoard = to ? bySlug.get(to) : undefined;
+        await onUpdateBoardAsync(fromBoard.id, { nextBoardId: toBoard?.id });
+      }
+    }
+
     onClose();
     handleReset();
   };
@@ -239,7 +476,16 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
       const finalBoard: GeneratedBoard = {
         name: boardData.boardName, // Required field
         description: boardData.description,
-        stages: boardData.stages,
+        stages: normalizeGeneratedBoardColors({
+          name: boardData.boardName,
+          description: boardData.description,
+          stages: boardData.stages,
+          automationSuggestions: boardData.automationSuggestions,
+          goal: placeholderStrategy.goal,
+          agentPersona: placeholderStrategy.agentPersona,
+          entryTrigger: placeholderStrategy.entryTrigger,
+          confidence: 0.9,
+        }).stages,
         automationSuggestions: boardData.automationSuggestions,
         ...placeholderStrategy,
         confidence: 0.9,
@@ -296,7 +542,7 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
       const hasChanges =
         response.board && JSON.stringify(response.board) !== JSON.stringify(boardToRefine);
 
-      const proposalData = hasChanges && response.board ? response.board : undefined;
+      const proposalData = hasChanges && response.board ? normalizeGeneratedBoardColors(response.board) : undefined;
 
       setChatMessages(prev => [
         ...prev,
@@ -323,7 +569,7 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
   };
 
   const handleApplyProposal = (proposal: GeneratedBoard) => {
-    setGeneratedBoard(proposal);
+    setGeneratedBoard(normalizeGeneratedBoardColors(proposal));
     setPreviewBoard(null); // Clear preview since it's now the actual board
     setChatMessages(prev => [
       ...prev,
@@ -335,13 +581,14 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
     if (previewBoard === proposal) {
       setPreviewBoard(null); // Turn off preview
     } else {
-      setPreviewBoard(proposal); // Turn on preview
+      setPreviewBoard(normalizeGeneratedBoardColors(proposal)); // Turn on preview (ensure safe colors)
     }
   };
 
   const handleCreateFromAI = async () => {
     // Use previewBoard if active, otherwise generatedBoard
-    const boardToCreate = previewBoard || generatedBoard;
+    const boardToCreateRaw = previewBoard || generatedBoard;
+    const boardToCreate = boardToCreateRaw ? normalizeGeneratedBoardColors(boardToCreateRaw) : null;
     if (!boardToCreate) return;
 
     // PHASE 2: Generate Strategy (The "Simulator 2")
@@ -466,23 +713,46 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
   // Determine which board to display
   const displayBoard = previewBoard || generatedBoard;
 
+  const isSelectHome = step === 'select' && selectMode === 'home' && !isChatMode;
+  const isSelectBrowse = step === 'select' && selectMode === 'browse' && !isChatMode;
+  const isAIInputStep = step === 'ai-input' && !isChatMode;
+  const isAIPreviewStep = step === 'ai-preview' && !isChatMode;
+  const isPlaybookPreviewStep = step === 'playbook-preview' && !isChatMode;
+  // Avoid conflicting max-width classes (Tailwind order can make `lg:max-w-5xl` win).
+  const panelMaxWidthClass = isChatMode
+    ? 'lg:max-w-5xl'
+    : isSelectHome
+      ? 'sm:max-w-xl lg:max-w-xl'
+      : isSelectBrowse
+        ? 'sm:max-w-2xl lg:max-w-2xl'
+        : isAIInputStep
+          ? 'sm:max-w-2xl lg:max-w-2xl'
+          : isAIPreviewStep
+            ? 'sm:max-w-4xl lg:max-w-4xl'
+            : isPlaybookPreviewStep
+              ? 'sm:max-w-4xl lg:max-w-4xl'
+              : 'lg:max-w-5xl';
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className={MODAL_OVERLAY_CLASS}>
       <AIProcessingModal
         isOpen={isProcessingModalOpen}
         currentStep={processingStep}
         phase={processingPhase}
       />
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      {/* Click-outside closes */}
+      <div className="absolute inset-0" onClick={onClose} />
 
       <div
-        className={`relative z-10 w-full ${isChatMode ? 'max-w-7xl' : 'max-w-6xl'} bg-white dark:bg-dark-card rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] transition-all duration-300`}
+        // NOTE: we hard-cap width/height by viewport to avoid overflow on small screens.
+        // `dvh` handles mobile browser chrome better than `vh`.
+        className={`relative z-10 w-full h-full sm:h-auto ${panelMaxWidthClass} bg-white dark:bg-dark-card rounded-xl sm:rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[calc(90dvh-1rem)] sm:max-h-[calc(90dvh-2rem)] transition-all duration-300`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-white/10 shrink-0">
-          <h2 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+        <div className="flex items-center justify-between p-3 sm:p-4 border-b border-slate-200 dark:border-white/10 shrink-0">
+          <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
             {isChatMode ? (
               <>
                 <MessageSquare size={24} className="text-primary-500" /> Refinar com IA
@@ -500,10 +770,10 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
         </div>
 
         {/* Content Body */}
-        <div className={`flex flex-1 overflow-hidden ${isChatMode ? 'flex-row' : 'flex-col'}`}>
+        <div className={`flex flex-1 overflow-hidden ${isChatMode ? 'flex-col lg:flex-row' : 'flex-col'}`}>
           {/* Chat Section (Only in Chat Mode) */}
           {isChatMode && (
-            <div className="w-1/3 border-r border-slate-200 dark:border-white/10 flex flex-col bg-slate-50 dark:bg-dark-bg/50">
+            <div className="h-[38vh] lg:h-auto w-full lg:w-1/3 border-b lg:border-b-0 lg:border-r border-slate-200 dark:border-white/10 flex flex-col bg-slate-50 dark:bg-dark-bg/50">
               <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
                 {chatMessages.map((msg, idx) => (
                   <div
@@ -590,165 +860,307 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
 
           {/* Main Content / Preview Section */}
           <div
-            className={`flex-1 overflow-y-auto custom-scrollbar p-6 ${isChatMode ? 'bg-slate-100 dark:bg-black/20' : ''}`}
+            className={`flex-1 overflow-y-auto custom-scrollbar ${isSelectHome ? 'p-4 sm:p-4' : 'p-4 sm:p-6'} ${isChatMode ? 'bg-slate-100 dark:bg-black/20' : ''}`}
           >
             {step === 'select' && (
               <div className="space-y-6">
-                {/* Tabs */}
-                {/* Tabs - Segmented Control Style */}
-                <div className="flex p-1 bg-slate-100 dark:bg-white/5 rounded-xl mb-6">
-                  <button
-                    onClick={() => setActiveTab('official')}
-                    className={`flex-1 py-2 px-4 text-sm font-medium rounded-lg transition-all duration-200 ${activeTab === 'official'
-                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
-                      }`}
-                  >
-                    Oficiais
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('community')}
-                    className={`flex-1 py-2 px-4 text-sm font-medium rounded-lg transition-all duration-200 ${activeTab === 'community'
-                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
-                      }`}
-                  >
-                    Comunidade
-                  </button>
-                </div>
+                {selectMode === 'home' ? (
+                  <div className="mx-auto w-full">
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white text-center">
+                      Como você quer começar?
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 text-center">
+                      Escolha um caminho. O resto aparece depois.
+                    </p>
 
-                {activeTab === 'official' ? (
-                  <div className="grid grid-cols-12 gap-8 h-full">
-                    {/* Left Column: Official Playbooks (40%) */}
-                    <div className="col-span-5 flex flex-col gap-4 border-r border-slate-100 dark:border-white/5 pr-6">
-                      <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center justify-center gap-2 text-center">
-                        <span className="text-yellow-500">⭐</span> Playbooks (Jornadas)
-                      </h3>
-                      <div className="flex flex-col gap-3 overflow-y-auto custom-scrollbar pr-2">
-                        {OFFICIAL_JOURNEYS &&
-                          Object.values(OFFICIAL_JOURNEYS).map(journey => (
-                            <button
-                              key={journey.id}
-                              onClick={() => {
-                                setSelectedPlaybookId(journey.id);
-                                setStep('playbook-preview');
-                              }}
-                              className="group relative w-full text-left overflow-hidden rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-dark-card hover:border-primary-500/50 dark:hover:border-primary-500/50 transition-all duration-200 shadow-sm hover:shadow-md"
-                            >
-                              <div className="absolute inset-0 bg-gradient-to-r from-primary-50/50 to-transparent dark:from-primary-900/10 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-
-                              <div className="relative p-4 flex items-center gap-3">
-                                <div className="w-10 h-10 flex items-center justify-center bg-primary-50 dark:bg-primary-900/20 rounded-lg text-xl shrink-0 group-hover:scale-110 transition-transform duration-300">
-                                  {journey.icon}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <h4 className="font-bold text-slate-900 dark:text-white text-sm truncate group-hover:text-primary-600 dark:group-hover:text-primary-400">
-                                    {journey.name}
-                                  </h4>
-                                  <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mt-0.5">
-                                    {journey.description}
-                                  </p>
-                                </div>
-                                <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-                                  <div className="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900/40 flex items-center justify-center text-primary-600 dark:text-primary-400 text-xs">
-                                    →
-                                  </div>
-                                </div>
-                              </div>
-                            </button>
-                          ))}
+                    {/* Primary CTA: AI */}
+                    <button
+                      onClick={() => setStep('ai-input')}
+                      className="mt-4 w-full relative overflow-hidden p-1 rounded-2xl group transition-all hover:shadow-lg hover:shadow-primary-500/20"
+                    >
+                      <div className="absolute inset-0 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 opacity-95 group-hover:opacity-100 transition-opacity" />
+                      <div className="relative bg-white dark:bg-slate-900 rounded-[14px] px-4 py-3 flex items-center justify-center gap-3 transition-colors group-hover:bg-opacity-90 dark:group-hover:bg-opacity-90">
+                        <Sparkles
+                          size={18}
+                          className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 to-pink-500"
+                        />
+                        <div className="flex flex-col items-center leading-tight">
+                          <span className="font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-pink-600 dark:from-indigo-400 dark:to-pink-400">
+                            Criar com IA
+                          </span>
+                          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                            Em 1 frase, eu monto o board pra você.
+                          </span>
+                        </div>
                       </div>
+                    </button>
+
+                    {/* Compact chooser list */}
+                    <div className="mt-3 space-y-2">
+                      <button
+                        onClick={() => {
+                          setSelectMode('browse');
+                          setSelectBrowseFocus('playbooks');
+                          setActiveTab('official');
+                        }}
+                        className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-dark-card hover:border-primary-500/50 dark:hover:border-primary-500/50 transition-all text-left"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-lg bg-primary-50 dark:bg-primary-900/20 flex items-center justify-center">
+                            <LayoutTemplate className="w-4 h-4 text-primary-600 dark:text-primary-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-semibold text-slate-900 dark:text-white">
+                              Usar um playbook (recomendado)
+                            </div>
+                            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                              Jornada completa pronta para usar.
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setSelectMode('browse');
+                          setSelectBrowseFocus('templates');
+                          setActiveTab('official');
+                        }}
+                        className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-dark-card hover:border-primary-500/50 dark:hover:border-primary-500/50 transition-all text-left"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-lg bg-slate-100 dark:bg-white/5 flex items-center justify-center">
+                            <Settings className="w-4 h-4 text-slate-700 dark:text-slate-200" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-semibold text-slate-900 dark:text-white">
+                              Usar template individual
+                            </div>
+                            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                              Um board pronto (Pré-venda, Vendas, CS…).
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          onClose();
+                          onOpenCustomModal();
+                          handleReset();
+                        }}
+                        className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-dark-card hover:border-primary-500/50 dark:hover:border-primary-500/50 transition-all text-left"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-lg bg-slate-100 dark:bg-white/5 flex items-center justify-center">
+                            <Plus className="w-4 h-4 text-slate-700 dark:text-slate-200" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-semibold text-slate-900 dark:text-white">Começar do zero</div>
+                            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                              Um board em branco.
+                            </div>
+                          </div>
+                        </div>
+                      </button>
                     </div>
 
-                    {/* Right Column: Single Boards (60%) */}
-                    <div className="col-span-7 flex flex-col gap-4">
-                      <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider text-center">
-                        Boards Individuais
-                      </h3>
-                      <div className="grid grid-cols-2 gap-4 overflow-y-auto custom-scrollbar pr-2 pb-2">
-                        {(Object.keys(BOARD_TEMPLATES) as BoardTemplateType[]).map(key => {
-                          const template = BOARD_TEMPLATES[key];
-                          return (
-                            <button
-                              key={key}
-                              onClick={() => handleTemplateSelect(key)}
-                              className="p-4 bg-white dark:bg-dark-card border border-slate-200 dark:border-white/10 rounded-xl hover:border-primary-500/50 dark:hover:border-primary-500/50 hover:shadow-md transition-all text-left group flex flex-col h-full min-h-[140px]"
-                            >
-                              <div className="flex items-center gap-3 mb-3 shrink-0">
-                                <span className="text-2xl group-hover:scale-110 transition-transform duration-200">
-                                  {template.emoji}
-                                </span>
-                                <h4 className="font-semibold text-slate-900 dark:text-white text-base group-hover:text-primary-600 dark:group-hover:text-primary-400 transition-colors truncate">
-                                  {template.name}
-                                </h4>
-                              </div>
-                              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-3 flex-1">
-                                {template.description}
-                              </p>
-                              <div className="mt-3 pt-3 border-t border-slate-100 dark:border-white/5 flex gap-2 shrink-0 overflow-hidden">
-                                {template.tags.slice(0, 2).map((tag, tagIndex) => (
-                                  <span
-                                    key={`${key}-tag-${tagIndex}`}
-                                    className="px-2 py-1 rounded-md bg-slate-50 dark:bg-white/5 text-[10px] font-medium text-slate-500 dark:text-slate-400 border border-slate-100 dark:border-white/5 whitespace-nowrap"
-                                  >
-                                    #{tag}
-                                  </span>
-                                ))}
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
+                    <div className="mt-3 text-center">
+                      <button
+                        onClick={() => {
+                          setSelectMode('browse');
+                          setSelectBrowseFocus('community');
+                          setActiveTab('community');
+                        }}
+                        className="text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
+                      >
+                        Ver templates da comunidade →
+                      </button>
                     </div>
                   </div>
                 ) : (
-                  <div>
-                    <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">
-                      Templates da Comunidade:
-                    </h3>
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <button
+                        onClick={() => setSelectMode('home')}
+                        className="px-3 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5 rounded-lg transition-colors font-medium"
+                      >
+                        ← Voltar
+                      </button>
 
-                    {isLoadingRegistry ? (
-                      <div className="flex items-center justify-center py-12">
-                        <Loader2 className="animate-spin text-primary-500" size={32} />
+                      <div className="flex p-1 bg-slate-100 dark:bg-white/5 rounded-xl">
+                        <button
+                          onClick={() => {
+                            setSelectBrowseFocus('playbooks');
+                            setActiveTab('official');
+                          }}
+                          className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-200 ${selectBrowseFocus === 'playbooks'
+                            ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+                            }`}
+                        >
+                          Playbooks
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectBrowseFocus('templates');
+                            setActiveTab('official');
+                          }}
+                          className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-200 ${selectBrowseFocus === 'templates'
+                            ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+                            }`}
+                        >
+                          Templates
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectBrowseFocus('community');
+                            setActiveTab('community');
+                          }}
+                          className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-200 ${selectBrowseFocus === 'community'
+                            ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+                            }`}
+                        >
+                          Comunidade
+                        </button>
                       </div>
-                    ) : (
-                      <div className="grid grid-cols-1 gap-4 mb-6">
-                        {registryIndex?.templates.map(template => (
-                          <button
-                            key={template.id}
-                            onClick={() => handleInstallJourney(template.path)}
-                            disabled={isInstalling}
-                            className="p-4 border-2 border-slate-200 dark:border-white/10 rounded-xl hover:border-primary-500 dark:hover:border-primary-500 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-all text-left group disabled:opacity-50"
-                          >
-                            <div className="flex items-center justify-between mb-2">
-                              <h4 className="font-semibold text-slate-900 dark:text-white group-hover:text-primary-600 dark:group-hover:text-primary-400 flex items-center gap-2">
-                                🚀 {template.name}
-                                <span className="text-xs bg-slate-100 dark:bg-white/10 px-2 py-0.5 rounded-full text-slate-500">
-                                  v{template.version}
-                                </span>
-                              </h4>
-                              {isInstalling && (
-                                <Loader2 className="animate-spin text-primary-500" size={16} />
-                              )}
-                            </div>
-                            <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">
-                              {template.description}
-                            </p>
-                            <div className="flex gap-2">
-                              {template.tags.map((tag, tagIndex) => (
-                                <span
-                                  key={`${template.id}-tag-${tagIndex}`}
-                                  className="px-2 py-1 rounded-md bg-white dark:bg-black/20 text-xs text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/5"
-                                >
-                                  #{tag}
-                                </span>
-                              ))}
-                              <span className="text-xs text-slate-400 ml-auto">
-                                por {template.author}
-                              </span>
-                            </div>
-                          </button>
-                        ))}
+                    </div>
+
+                    {selectBrowseFocus === 'playbooks' && (
+                      <div className="flex flex-col gap-3">
+                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center justify-center gap-2 text-center">
+                          <span className="text-yellow-500">⭐</span> Playbooks (Jornadas)
+                        </h3>
+                        <div className="flex flex-col gap-3">
+                          {OFFICIAL_JOURNEYS &&
+                            Object.values(OFFICIAL_JOURNEYS).map(journey => (
+                              <button
+                                key={journey.id}
+                                onClick={() => {
+                                  setSelectedPlaybookId(journey.id);
+                                  setStep('playbook-preview');
+                                }}
+                                className="group relative w-full text-left overflow-hidden rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-dark-card hover:border-primary-500/50 dark:hover:border-primary-500/50 transition-all duration-200 shadow-sm hover:shadow-md"
+                              >
+                                <div className="absolute inset-0 bg-gradient-to-r from-primary-50/50 to-transparent dark:from-primary-900/10 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                                <div className="relative p-4 flex items-center gap-3">
+                                  <div className="w-10 h-10 flex items-center justify-center bg-primary-50 dark:bg-primary-900/20 rounded-lg text-xl shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                    {journey.icon}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <h4 className="font-bold text-slate-900 dark:text-white text-sm truncate group-hover:text-primary-600 dark:group-hover:text-primary-400">
+                                      {journey.name}
+                                    </h4>
+                                    <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mt-0.5">
+                                      {journey.description}
+                                    </p>
+                                  </div>
+                                  <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <div className="w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-900/40 flex items-center justify-center text-primary-600 dark:text-primary-400 text-xs">
+                                      →
+                                    </div>
+                                  </div>
+                                </div>
+                              </button>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {selectBrowseFocus === 'templates' && (
+                      <div className="flex flex-col gap-3">
+                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider text-center">
+                          Boards Individuais
+                        </h3>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {(Object.keys(BOARD_TEMPLATES) as BoardTemplateType[]).map(key => {
+                            const template = BOARD_TEMPLATES[key];
+                            return (
+                              <button
+                                key={key}
+                                onClick={() => handleTemplateSelect(key)}
+                                className="p-4 bg-white dark:bg-dark-card border border-slate-200 dark:border-white/10 rounded-xl hover:border-primary-500/50 dark:hover:border-primary-500/50 hover:shadow-md transition-all text-left group flex flex-col h-full min-h-[140px]"
+                              >
+                                <div className="flex items-center gap-3 mb-3 shrink-0">
+                                  <span className="text-2xl group-hover:scale-110 transition-transform duration-200">
+                                    {template.emoji}
+                                  </span>
+                                  <h4 className="font-semibold text-slate-900 dark:text-white text-base group-hover:text-primary-600 dark:group-hover:text-primary-400 transition-colors truncate">
+                                    {template.name}
+                                  </h4>
+                                </div>
+                                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed line-clamp-3 flex-1">
+                                  {template.description}
+                                </p>
+                                <div className="mt-3 pt-3 border-t border-slate-100 dark:border-white/5 flex gap-2 shrink-0 overflow-hidden">
+                                  {template.tags.slice(0, 2).map((tag, tagIndex) => (
+                                    <span
+                                      key={`${key}-tag-${tagIndex}`}
+                                      className="px-2 py-1 rounded-md bg-slate-50 dark:bg-white/5 text-[10px] font-medium text-slate-500 dark:text-slate-400 border border-slate-100 dark:border-white/5 whitespace-nowrap"
+                                    >
+                                      #{tag}
+                                    </span>
+                                  ))}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {selectBrowseFocus === 'community' && (
+                      <div>
+                        <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">
+                          Templates da Comunidade
+                        </h3>
+
+                        {isLoadingRegistry ? (
+                          <div className="flex items-center justify-center py-12">
+                            <Loader2 className="animate-spin text-primary-500" size={32} />
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 gap-4 mb-6">
+                            {registryIndex?.templates.map(template => (
+                              <button
+                                key={template.id}
+                                onClick={() => handleInstallJourney(template.path)}
+                                disabled={isInstalling}
+                                className="p-4 border-2 border-slate-200 dark:border-white/10 rounded-xl hover:border-primary-500 dark:hover:border-primary-500 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-all text-left group disabled:opacity-50"
+                              >
+                                <div className="flex items-center justify-between mb-2">
+                                  <h4 className="font-semibold text-slate-900 dark:text-white group-hover:text-primary-600 dark:group-hover:text-primary-400 flex items-center gap-2">
+                                    🚀 {template.name}
+                                    <span className="text-xs bg-slate-100 dark:bg-white/10 px-2 py-0.5 rounded-full text-slate-500">
+                                      v{template.version}
+                                    </span>
+                                  </h4>
+                                  {isInstalling && (
+                                    <Loader2 className="animate-spin text-primary-500" size={16} />
+                                  )}
+                                </div>
+                                <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">
+                                  {template.description}
+                                </p>
+                                <div className="flex gap-2 flex-wrap">
+                                  {template.tags.map((tag, tagIndex) => (
+                                    <span
+                                      key={`${template.id}-tag-${tagIndex}`}
+                                      className="px-2 py-1 rounded-md bg-white dark:bg-black/20 text-xs text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/5"
+                                    >
+                                      #{tag}
+                                    </span>
+                                  ))}
+                                  <span className="text-xs text-slate-400 ml-auto">
+                                    por {template.author}
+                                  </span>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -789,17 +1201,39 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
                     <div className="flex items-center gap-4 mb-8">
                       <div className="h-px flex-1 bg-slate-300 dark:bg-white/10" />
                       <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-                        Jornada do Cliente ({OFFICIAL_JOURNEYS[selectedPlaybookId].boards.length}{' '}
+                        Jornada do Cliente ({(getJourneyForInstall(selectedPlaybookId)?.boards ?? OFFICIAL_JOURNEYS[selectedPlaybookId].boards).length}{' '}
                         Etapas)
                       </span>
                       <div className="h-px flex-1 bg-slate-300 dark:bg-white/10" />
                     </div>
 
+                    {selectedPlaybookId === 'INFOPRODUCER' && (
+                      <div className="mb-6 p-4 rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-dark-card">
+                        <div className="flex items-start gap-3">
+                          <input
+                            id="include-renewals"
+                            type="checkbox"
+                            checked={includeSubscriptionRenewals}
+                            onChange={e => setIncludeSubscriptionRenewals(e.target.checked)}
+                            className="mt-1 h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500"
+                          />
+                          <div className="flex-1">
+                            <label htmlFor="include-renewals" className="font-semibold text-slate-900 dark:text-white">
+                              Incluir Renovações (Assinatura)
+                            </label>
+                            <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+                              Adiciona um board opcional para controlar renovações com antecedência (180/120/90/60/30 dias).
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="space-y-8 relative">
                       {/* Vertical Line - Connected to cards */}
                       <div className="absolute left-6 top-8 bottom-8 w-0.5 bg-slate-200 dark:bg-white/10" />
 
-                      {OFFICIAL_JOURNEYS[selectedPlaybookId].boards.map((board, index) => (
+                      {(getJourneyForInstall(selectedPlaybookId)?.boards ?? OFFICIAL_JOURNEYS[selectedPlaybookId].boards).map((board, index) => (
                         <div key={index} className="relative pl-20 group">
                           {/* Number Bubble - Vertically Centered */}
                           <div className="absolute left-0 top-1/2 -translate-y-1/2 w-12 h-12 rounded-full bg-white dark:bg-dark-card border-2 border-slate-200 dark:border-white/10 flex items-center justify-center text-lg font-bold text-slate-400 shadow-sm z-10 group-hover:border-primary-500 group-hover:text-primary-600 dark:group-hover:text-primary-400 group-hover:scale-110 transition-all duration-300">
@@ -819,7 +1253,7 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
                                   </span>
                                 )}
                                 {index ===
-                                  OFFICIAL_JOURNEYS[selectedPlaybookId].boards.length - 1 && (
+                                  (getJourneyForInstall(selectedPlaybookId)?.boards ?? OFFICIAL_JOURNEYS[selectedPlaybookId].boards).length - 1 && (
                                     <span className="px-2.5 py-1 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400 text-[10px] font-bold uppercase tracking-wide">
                                       Fim
                                     </span>
@@ -884,7 +1318,7 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
                       <button
                         onClick={() => {
                           onClose();
-                          router.push('/settings#ai-config');
+                          router.push('/settings/ai#ai-config');
                         }}
                         className="mt-3 inline-flex items-center gap-2 px-4 py-2 bg-white dark:bg-white/10 hover:bg-slate-50 dark:hover:bg-white/15 text-slate-800 dark:text-white font-semibold rounded-lg border border-slate-200 dark:border-white/10 transition-colors"
                         type="button"
@@ -974,42 +1408,9 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
           </div>
         </div>
 
-        {/* Footer - Fixed Actions */}
-        <div className="p-6 border-t border-slate-200 dark:border-white/10 bg-white dark:bg-dark-card shrink-0">
-          {step === 'select' && (
-            <div className="space-y-3">
-              <button
-                onClick={() => setStep('ai-input')}
-                className="w-full relative overflow-hidden p-1 rounded-xl group transition-all hover:shadow-lg hover:shadow-primary-500/20"
-              >
-                <div className="absolute inset-0 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 opacity-90 group-hover:opacity-100 transition-opacity" />
-                <div className="relative bg-white dark:bg-slate-900 rounded-[10px] p-4 flex items-center justify-center gap-3 transition-colors group-hover:bg-opacity-90 dark:group-hover:bg-opacity-90">
-                  <Sparkles
-                    size={20}
-                    className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 to-pink-500"
-                  />
-                  <span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-pink-600 dark:from-indigo-400 dark:to-pink-400">
-                    Criar com Inteligência Artificial
-                  </span>
-                </div>
-              </button>
-
-              <button
-                onClick={() => {
-                  onClose();
-                  onOpenCustomModal();
-                  handleReset();
-                }}
-                className="w-full text-xs font-medium text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors flex items-center justify-center gap-1"
-              >
-                <span>Preferir começar do zero?</span>
-                <span className="underline decoration-slate-300 dark:decoration-slate-600 underline-offset-2">
-                  Criar board em branco
-                </span>
-              </button>
-            </div>
-          )}
-
+        {/* Footer - Fixed Actions (only when we actually have actions) */}
+        {step !== 'select' && (
+          <div className="p-6 border-t border-slate-200 dark:border-white/10 bg-white dark:bg-dark-card shrink-0">
           {step === 'playbook-preview' && selectedPlaybookId && (
             <div className="flex gap-3 justify-between items-center w-full">
               <button
@@ -1096,7 +1497,8 @@ export const BoardCreationWizard: React.FC<BoardCreationWizardProps> = ({
               </div>
             </div>
           )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

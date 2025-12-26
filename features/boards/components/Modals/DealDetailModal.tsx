@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useId } from 'react';
+import React, { useState, useRef, useEffect, useId, useMemo } from 'react';
 import { useCRM } from '@/context/CRMContext';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
@@ -7,7 +7,6 @@ import { LossReasonModal } from '@/components/ui/LossReasonModal';
 import { useMoveDealSimple } from '@/lib/query/hooks';
 import { FocusTrap, useFocusReturn } from '@/lib/a11y';
 import { Activity } from '@/types';
-import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import {
   analyzeLead,
   generateEmailDraft,
@@ -26,9 +25,6 @@ import {
   ThumbsDown,
   Building2,
   User,
-  FileText,
-  Mic,
-  StopCircle,
   Package,
   Sword,
   CheckCircle2,
@@ -36,12 +32,16 @@ import {
 } from 'lucide-react';
 import { StageProgressBar } from '../StageProgressBar';
 import { ActivityRow } from '@/features/activities/components/ActivityRow';
+import { formatPriorityPtBr } from '@/utils/priority';
 
 interface DealDetailModalProps {
   dealId: string | null;
   isOpen: boolean;
   onClose: () => void;
 }
+
+// Performance: reuse date formatter instance.
+const PT_BR_DATE_FORMATTER = new Intl.DateTimeFormat('pt-BR');
 
 export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen, onClose }) => {
   // Accessibility: Unique ID for ARIA labelling
@@ -70,11 +70,19 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
   const { profile } = useAuth();
   const { addToast } = useToast();
 
-  const deal = deals.find(d => d.id === dealId);
-  const contact = deal ? contacts.find(c => c.id === deal.contactId) : null;
+  // Performance: avoid repeated `find(...)` on large arrays.
+  const dealsById = useMemo(() => new Map(deals.map((d) => [d.id, d])), [deals]);
+  const contactsById = useMemo(() => new Map(contacts.map((c) => [c.id, c])), [contacts]);
+  const boardsById = useMemo(() => new Map(boards.map((b) => [b.id, b])), [boards]);
+  const lifecycleStageById = useMemo(() => new Map(lifecycleStages.map((s) => [s.id, s])), [lifecycleStages]);
+  const productsById = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+  const activitiesById = useMemo(() => new Map(activities.map((a) => [a.id, a])), [activities]);
+
+  const deal = dealId ? dealsById.get(dealId) : undefined;
+  const contact = deal ? (contactsById.get(deal.contactId) ?? null) : null;
 
   // Determine the correct board for this deal
-  const dealBoard = deal ? boards.find(b => b.id === deal.boardId) || activeBoard : activeBoard;
+  const dealBoard = deal ? (boardsById.get(deal.boardId) ?? activeBoard) : activeBoard;
 
   // Use unified TanStack Query hook for moving deals
   const { moveDeal } = useMoveDealSimple(dealBoard, lifecycleStages);
@@ -90,10 +98,7 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
   const [emailDraft, setEmailDraft] = useState<string | null>(null);
   const [newNote, setNewNote] = useState('');
   const [activeTab, setActiveTab] = useState<'timeline' | 'products' | 'info'>('timeline');
-
-  // Ditado por voz (Web Speech API) - client-side (sem backend)
-  const speech = useSpeechRecognition();
-  const voicePrefixRef = useRef<string>('');
+  const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const [objection, setObjection] = useState('');
   const [objectionResponses, setObjectionResponses] = useState<string[]>([]);
@@ -101,6 +106,10 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
 
   const [selectedProductId, setSelectedProductId] = useState('');
   const [productQuantity, setProductQuantity] = useState(1);
+  const [showCustomItem, setShowCustomItem] = useState(false);
+  const [customItemName, setCustomItemName] = useState('');
+  const [customItemPrice, setCustomItemPrice] = useState<string>('0');
+  const [customItemQuantity, setCustomItemQuantity] = useState(1);
 
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [showLossReasonModal, setShowLossReasonModal] = useState(false);
@@ -124,37 +133,42 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
       setShowLossReasonModal(false);
       setPendingLostStageId(null);
       setLossReasonOrigin('button');
-      speech.resetTranscript();
-      voicePrefixRef.current = '';
     }
   }, [isOpen, dealId]); // Depend on dealId to reset when switching deals
 
-  // Mantém o textarea sincronizado com o ditado (sem sobrescrever um prefixo que o usuário já tinha)
+  // UX: preselect board's default product when opening the Products tab (non-invasive).
   useEffect(() => {
-    if (!speech.isListening) return;
-    setNewNote(`${voicePrefixRef.current}${speech.transcript}`);
-  }, [speech.isListening, speech.transcript]);
+    if (!isOpen) return;
+    if (activeTab !== 'products') return;
+    const defaultId = dealBoard?.defaultProductId;
+    if (!defaultId) return;
+    if (selectedProductId) return;
+    // Only suggest if product exists & is active.
+    const p = productsById.get(defaultId);
+    if (!p || p.active === false) return;
+    setSelectedProductId(defaultId);
+    setProductQuantity(1);
+  }, [activeTab, dealBoard?.defaultProductId, isOpen, productsById, selectedProductId]);
 
-  // Segurança/UX: não deixar o microfone “ligado” se o modal fechar ou se o usuário sair da aba Timeline.
-  useEffect(() => {
-    if (!isOpen && speech.isListening) {
-      speech.stopListening();
-    }
-  }, [isOpen, speech.isListening]);
+  // Pre-compute stage label once for tool prompts (avoid repeated stage lookup).
+  const stageLabel = useMemo(() => {
+    if (!dealBoard) return undefined;
+    const stage = dealBoard.stages.find((s) => s.id === deal?.status);
+    return stage?.label;
+  }, [deal?.status, dealBoard]);
 
-  useEffect(() => {
-    if (activeTab !== 'timeline' && speech.isListening) {
-      speech.stopListening();
-    }
-  }, [activeTab, speech.isListening]);
+  // Performance: filter deal activities once per deal change (avoid filtering inside render).
+  const dealActivities = useMemo(() => {
+    if (!deal) return [] as Activity[];
+    return activities.filter((a) => a.dealId === deal.id);
+  }, [activities, deal]);
 
   if (!isOpen || !deal) return null;
 
   const handleAnalyzeDeal = async () => {
     setIsAnalyzing(true);
     try {
-      // Buscar label do estágio para não enviar UUID para a IA
-      const stageLabel = dealBoard?.stages.find(s => s.id === deal.status)?.label;
+      // Performance: stageLabel memoized above.
       const result = await analyzeLead(deal, stageLabel);
       setAiResult({ suggestion: result.suggestion, score: result.probabilityScore });
       updateDeal(deal.id, { aiSummary: result.suggestion, probability: result.probabilityScore });
@@ -172,8 +186,7 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
   const handleDraftEmail = async () => {
     setIsDrafting(true);
     try {
-      // Buscar label do estágio para não enviar UUID para a IA
-      const stageLabel = dealBoard?.stages.find(s => s.id === deal.status)?.label;
+      // Performance: stageLabel memoized above.
       const draft = await generateEmailDraft(deal, stageLabel);
       setEmailDraft(draft);
     } catch (error: any) {
@@ -187,24 +200,6 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
     }
   };
 
-  const startRecording = () => {
-    if (!speech.hasRecognitionSupport) {
-      addToast('Seu navegador não suporta ditado por voz.', 'warning');
-      return;
-    }
-
-    // Mantém o que já estava no textarea como prefixo (caso o usuário misture digitação + voz)
-    voicePrefixRef.current = newNote.trim() ? `${newNote.trim()}\n` : '';
-    speech.resetTranscript();
-    speech.startListening();
-  };
-
-  const stopRecording = () => {
-    speech.stopListening();
-    if (!newNote.trim()) {
-      addToast('Não consegui captar fala. Tente novamente.', 'warning');
-    }
-  };
 
   const handleObjection = async () => {
     if (!objection.trim()) return;
@@ -226,9 +221,6 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
   const handleAddNote = () => {
     if (!newNote.trim()) return;
 
-    // Se estiver ditando, para antes de enviar para evitar que o textarea continue sendo atualizado.
-    speech.stopListening();
-
     const noteActivity: Activity = {
       id: crypto.randomUUID(),
       dealId: deal.id,
@@ -243,13 +235,12 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
 
     addActivity(noteActivity);
     setNewNote('');
-    speech.resetTranscript();
-    voicePrefixRef.current = '';
   };
 
   const handleAddProduct = () => {
     if (!selectedProductId) return;
-    const product = products.find(p => p.id === selectedProductId);
+    // Performance: O(1) lookup instead of scanning all products.
+    const product = productsById.get(selectedProductId);
     if (!product) return;
 
     addItemToDeal(deal.id, {
@@ -261,6 +252,37 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
 
     setSelectedProductId('');
     setProductQuantity(1);
+  };
+
+  const handleAddCustomItem = () => {
+    const name = customItemName.trim();
+    const price = Number(customItemPrice);
+    const qty = Number(customItemQuantity);
+    if (!name) {
+      addToast('Digite o nome do item.', 'warning');
+      return;
+    }
+    if (!Number.isFinite(price) || price < 0) {
+      addToast('Preço inválido.', 'warning');
+      return;
+    }
+    if (!Number.isFinite(qty) || qty < 1) {
+      addToast('Quantidade inválida.', 'warning');
+      return;
+    }
+
+    // "Produto depende do cliente": item livre, sem product_id.
+    addItemToDeal(deal.id, {
+      productId: '', // deal_items.product_id é opcional no schema; sanitizeUUID('') => null
+      name,
+      price,
+      quantity: qty,
+    });
+
+    setCustomItemName('');
+    setCustomItemPrice('0');
+    setCustomItemQuantity(1);
+    setShowCustomItem(false);
   };
 
   const confirmDeleteDeal = () => {
@@ -291,7 +313,7 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
     updateDeal(deal.id, { customFields: updatedFields });
   };
 
-  const dealActivities = activities.filter(a => a.dealId === deal.id);
+  // dealActivities memoized above.
 
   // Handle escape key to close modal
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -303,11 +325,17 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
   return (
     <FocusTrap active={isOpen} onEscape={onClose}>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4"
+        // Backdrop + positioning wrapper. Clicking outside the panel should close the modal.
+        // Use a high z-index so it never renders behind fixed sidebars/overlays.
+        className="fixed inset-0 z-9999 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4"
         role="dialog"
         aria-modal="true"
         aria-labelledby={headingId}
         onKeyDown={handleKeyDown}
+        onClick={(e) => {
+          // Only close when clicking the backdrop, not when clicking inside the panel.
+          if (e.target === e.currentTarget) onClose();
+        }}
       >
         <div className="bg-white dark:bg-dark-card border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
           {/* HEADER (Stage Bar + Won/Lost) */}
@@ -483,6 +511,7 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
               <StageProgressBar
                 stages={dealBoard.stages}
                 currentStatus={deal.status}
+                variant="timeline"
                 onStageClick={stageId => {
                   // Check if clicking on a LOST stage
                   const targetStage = dealBoard.stages.find(s => s.id === stageId);
@@ -532,7 +561,7 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
                         {deal.contactName || 'Sem contato'}
                         {contact?.stage &&
                           (() => {
-                            const stage = lifecycleStages.find(s => s.id === contact.stage);
+                            const stage = lifecycleStageById.get(contact.stage);
                             if (!stage) return null;
 
                             // Extract base color name (e.g. 'blue' from 'bg-blue-500')
@@ -559,14 +588,14 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">
                       <span className="text-slate-500">Prioridade</span>
-                      <span className="text-slate-900 dark:text-white capitalize">
-                        {deal.priority}
+                      <span className="text-slate-900 dark:text-white">
+                        {formatPriorityPtBr(deal.priority)}
                       </span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-slate-500">Criado em</span>
                       <span className="text-slate-900 dark:text-white">
-                        {new Date(deal.createdAt).toLocaleDateString('pt-BR')}
+                        {PT_BR_DATE_FORMATTER.format(new Date(deal.createdAt))}
                       </span>
                     </div>
                     <div className="flex justify-between text-sm">
@@ -647,44 +676,14 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
                   <div className="space-y-6">
                     <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl p-4 shadow-sm">
                       <textarea
+                        ref={noteTextareaRef}
                         className="w-full bg-transparent text-sm text-slate-900 dark:text-white placeholder:text-slate-400 outline-none resize-none min-h-[80px]"
                         placeholder="Escreva uma nota..."
                         value={newNote}
                         onChange={e => setNewNote(e.target.value)}
                       ></textarea>
                       <div className="flex justify-between items-center mt-2 pt-2 border-t border-slate-100 dark:border-white/5">
-                        <div className="flex gap-2 text-slate-400">
-                          <button className="p-1 hover:text-primary-500 transition-colors">
-                            <FileText size={16} />
-                          </button>
-                          <button
-                            onClick={speech.isListening ? stopRecording : startRecording}
-                            className={`p-1 transition-all ${speech.isListening ? 'text-red-500 animate-pulse' : 'hover:text-primary-500'}`}
-                            title="Ditado por voz (transcrição no navegador)"
-                            aria-pressed={speech.isListening}
-                          >
-                            {speech.isListening ? (
-                              <StopCircle size={16} />
-                            ) : (
-                              <Mic size={16} />
-                            )}
-                          </button>
-
-                          {speech.isListening && (
-                            <div
-                              className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400 select-none"
-                              aria-live="polite"
-                            >
-                              <span className="relative flex h-2 w-2">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-60" />
-                                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
-                              </span>
-                              <span>
-                                Ouvindo… <span className="text-slate-500 dark:text-slate-300">(clique para parar)</span>
-                              </span>
-                            </div>
-                          )}
-                        </div>
+                        <div />
                         <button
                           onClick={handleAddNote}
                           disabled={!newNote.trim()}
@@ -707,7 +706,8 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
                           activity={activity}
                           deal={deal}
                           onToggleComplete={id => {
-                            const act = activities.find(a => a.id === id);
+                            // Performance: O(1) lookup instead of scanning all activities.
+                            const act = activitiesById.get(id);
                             if (act) updateActivity(id, { completed: !act.completed });
                           }}
                           onEdit={() => { }} // Edit not implemented in modal yet
@@ -752,6 +752,63 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
                           Adicionar
                         </button>
                       </div>
+
+                      <div className="mt-3 flex items-center justify-between gap-3">
+                        <div className="text-xs text-slate-500 dark:text-slate-400">
+                          Produto depende do cliente? Use um item personalizado (não precisa estar no catálogo).
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowCustomItem(v => !v)}
+                          className="text-xs font-bold text-primary-600 dark:text-primary-400 hover:underline"
+                        >
+                          {showCustomItem ? 'Fechar' : 'Adicionar item personalizado'}
+                        </button>
+                      </div>
+
+                      {showCustomItem && (
+                        <div className="mt-3 rounded-xl border border-slate-200 dark:border-white/10 bg-white/60 dark:bg-white/5 p-3">
+                          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+                            <div className="sm:col-span-6">
+                              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Nome do item</label>
+                              <input
+                                value={customItemName}
+                                onChange={e => setCustomItemName(e.target.value)}
+                                placeholder="Ex.: Pacote personalizado, Procedimento X…"
+                                className="w-full bg-white dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary-500 dark:text-white"
+                              />
+                            </div>
+                            <div className="sm:col-span-3">
+                              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Preço</label>
+                              <input
+                                value={customItemPrice}
+                                onChange={e => setCustomItemPrice(e.target.value)}
+                                inputMode="decimal"
+                                className="w-full bg-white dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary-500 dark:text-white"
+                              />
+                            </div>
+                            <div className="sm:col-span-2">
+                              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Qtd</label>
+                              <input
+                                type="number"
+                                min={1}
+                                value={customItemQuantity}
+                                onChange={e => setCustomItemQuantity(parseInt(e.target.value))}
+                                className="w-full bg-white dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary-500 dark:text-white"
+                              />
+                            </div>
+                            <div className="sm:col-span-1">
+                              <button
+                                type="button"
+                                onClick={handleAddCustomItem}
+                                className="w-full bg-primary-600 hover:bg-primary-500 text-white px-3 py-2 rounded-lg text-sm font-bold transition-colors"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <div className="bg-white dark:bg-white/5 border border-slate-200 dark:border-white/5 rounded-xl overflow-hidden">
@@ -820,7 +877,7 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
 
                 {activeTab === 'info' && (
                   <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
-                    <div className="bg-gradient-to-br from-primary-50 to-white dark:from-primary-900/10 dark:to-dark-card p-6 rounded-xl border border-primary-100 dark:border-primary-500/20">
+                    <div className="bg-linear-to-br from-primary-50 to-white dark:from-primary-900/10 dark:to-dark-card p-6 rounded-xl border border-primary-100 dark:border-primary-500/20">
                       <div className="flex items-center gap-3 mb-4">
                         <div className="p-2 bg-primary-100 dark:bg-primary-500/20 rounded-lg text-primary-600 dark:text-primary-400">
                           <BrainCircuit size={20} />
@@ -838,7 +895,7 @@ export const DealDetailModal: React.FC<DealDetailModalProps> = ({ dealId, isOpen
                       {/* STRATEGY CONTEXT BAR */}
                       {dealBoard?.agentPersona && (
                         <div className="mb-6 bg-slate-900/5 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-lg p-3 flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center text-white shadow-lg">
+                          <div className="w-10 h-10 rounded-full bg-linear-to-br from-purple-500 to-indigo-600 flex items-center justify-center text-white shadow-lg">
                             <Bot size={20} />
                           </div>
                           <div className="flex-1">

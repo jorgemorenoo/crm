@@ -17,6 +17,34 @@ import { supabase } from './client';
 import { Board, BoardStage, BoardGoal, AgentPersona, OrganizationId } from '@/types';
 import { sanitizeUUID, requireUUID } from './utils';
 
+// =============================================================================
+// Organization inference (client-side, RLS-safe)
+// =============================================================================
+let cachedOrgId: string | null = null;
+let cachedOrgUserId: string | null = null;
+
+async function getCurrentOrganizationId(): Promise<string | null> {
+  if (!supabase) return null;
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+
+  if (cachedOrgUserId === user.id && cachedOrgId) return cachedOrgId;
+
+  const { data: profile, error } = await supabase
+    .from('profiles')
+    .select('organization_id')
+    .eq('id', user.id)
+    .single();
+
+  if (error) return null;
+
+  const orgId = sanitizeUUID((profile as any)?.organization_id);
+  cachedOrgUserId = user.id;
+  cachedOrgId = orgId;
+  return orgId;
+}
+
 // ============================================
 // BOARDS SERVICE
 // ============================================
@@ -47,6 +75,8 @@ export interface DbBoard {
   won_stage_id: string | null;
   /** ID do estágio de Perda (Lost). */
   lost_stage_id: string | null;
+  /** Produto padrão para deals desse board (opcional). */
+  default_product_id?: string | null;
   /** Se deve manter no estágio ao ganhar (true) ou mover (false/null). */
   won_stay_in_stage: boolean | null;
   /** Se deve manter no estágio ao perder (true) ou mover (false/null). */
@@ -156,6 +186,7 @@ const transformBoard = (db: DbBoard, stages: DbBoardStage[]): Board => {
     lostStageId: db.lost_stage_id || undefined,
     wonStayInStage: db.won_stay_in_stage || false,
     lostStayInStage: db.lost_stay_in_stage || false,
+    defaultProductId: (db as any).default_product_id || undefined,
     goal,
     agentPersona,
     entryTrigger: db.entry_trigger || undefined,
@@ -184,6 +215,7 @@ const transformToDb = (board: Omit<Board, 'id' | 'createdAt'>, order?: number): 
   next_board_id: sanitizeUUID(board.nextBoardId),
   won_stage_id: sanitizeUUID(board.wonStageId),
   lost_stage_id: sanitizeUUID(board.lostStageId),
+  default_product_id: sanitizeUUID(board.defaultProductId),
   won_stay_in_stage: board.wonStayInStage || false,
   lost_stay_in_stage: board.lostStayInStage || false,
   goal_description: board.goal?.description || null,
@@ -206,7 +238,13 @@ const transformToDb = (board: Omit<Board, 'id' | 'createdAt'>, order?: number): 
  * @param orderNum - Posição na lista.
  * @returns Estágio parcial no formato do banco.
  */
-const transformStageToDb = (stage: BoardStage, boardId: string, orderNum: number): Partial<DbBoardStage> => ({
+const transformStageToDb = (
+  stage: BoardStage,
+  boardId: string,
+  orderNum: number,
+  organizationId: string
+): Partial<DbBoardStage> => ({
+  organization_id: organizationId,
   board_id: boardId,
   name: stage.label,
   label: stage.label,
@@ -300,6 +338,14 @@ export const boardsService = {
     try {
       if (!supabase) return { data: null, error: new Error('Supabase não configurado') };
 
+      // Ensure we always set organization_id for boards/stages (prevents downstream deal creation failures).
+      const organizationId =
+        sanitizeUUID((board as any).organizationId) || (await getCurrentOrganizationId());
+
+      if (!organizationId) {
+        return { data: null, error: new Error('Organização não identificada para este board. Recarregue a página e tente novamente.') };
+      }
+
       // Get next order if not provided
       let boardOrder = order;
       if (boardOrder === undefined) {
@@ -314,6 +360,7 @@ export const boardsService = {
       // 1. Create board
       const boardData = {
         ...transformToDb(board, boardOrder),
+        organization_id: organizationId,
         // For won/lost stages, we can't save them yet because stages don't exist
         won_stage_id: null,
         lost_stage_id: null,
@@ -332,7 +379,7 @@ export const boardsService = {
 
       // 2. Create stages and track ID mapping
       const stagesToInsert = (board.stages || []).map((stage, index) => ({
-        ...transformStageToDb(stage, newBoard.id, index),
+        ...transformStageToDb(stage, newBoard.id, index, organizationId),
       }));
 
       // Store fetched stages after insert to map IDs
@@ -400,6 +447,15 @@ export const boardsService = {
     try {
       if (!supabase) return { error: new Error('Supabase não configurado') };
 
+      // Needed to safely upsert stages with the proper org_id.
+      const { data: boardRow } = await supabase
+        .from('boards')
+        .select('organization_id')
+        .eq('id', id)
+        .single();
+      const organizationId =
+        sanitizeUUID((boardRow as any)?.organization_id) || (await getCurrentOrganizationId());
+
       const dbUpdates: Partial<DbBoard> = {};
 
       if (updates.name !== undefined) dbUpdates.name = updates.name;
@@ -441,10 +497,13 @@ export const boardsService = {
       // Update stages if provided
       // Update stages if provided
       if (updates.stages) {
+        if (!organizationId) {
+          return { error: new Error('Organização não identificada para atualizar estágios deste board. Recarregue a página e tente novamente.') };
+        }
         // 1. Upsert provided stages (Update existing + Insert new)
         // We MUST include the ID to update existing records
         const stagesToUpsert = updates.stages.map((stage, index) => ({
-          ...transformStageToDb(stage, id, index),
+          ...transformStageToDb(stage, id, index, organizationId),
           id: stage.id,
         }));
 
