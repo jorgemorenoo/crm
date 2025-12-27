@@ -507,6 +507,18 @@ export const WebhooksSection: React.FC = () => {
                     <Power className="h-4 w-4" />
                     {activeInbound.active ? 'Desativar' : 'Ativar'}
                   </button>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  <button
+                    onClick={() => copy(buildCurlExample(buildWebhookUrl(activeInbound.id), activeInbound.secret), 'inboundCurl')}
+                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/10 transition-colors"
+                  >
+                    <Copy className="h-4 w-4" />
+                    Copiar cURL (importar no n8n)
+                    {copiedKey === 'inboundCurl' && <Check className="h-4 w-4 text-green-600" />}
+                  </button>
+
                   <button
                     onClick={() => setConfirmDeleteInboundOpen(true)}
                     disabled={loading}
