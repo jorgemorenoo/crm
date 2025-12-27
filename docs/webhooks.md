@@ -90,8 +90,13 @@ Esse secret é o “token” do webhook. Trate como senha.
 
 Campos aceitos (todos opcionais, mas recomenda-se enviar pelo menos `email` ou `phone`):
 
+- **Campos do “Novo Negócio” (recomendado)**:
+  - `deal_title` (string): nome do negócio
+  - `deal_value` (number|string): valor estimado do negócio
+  - `company_name` (string): empresa do cliente
+  - `contact_name` (string): nome do contato principal
 - `external_event_id` (string): idempotência/dedupe (recomendado)
-- `name` (string)
+- `name` (string): (legado) nome do contato
 - `email` (string)
 - `phone` (string)
 - `source` (string): ex. `"hotmart"`, `"n8n"`, `"make"`
@@ -106,6 +111,7 @@ Ao receber o `POST`, o handler (`supabase/functions/webhook-in/index.ts`):
 - registra auditoria em `webhook_events_in` (quando `external_event_id` existe; com dedupe)
 - faz **upsert de contato** por `email` e/ou `phone` (na mesma `organization_id`)
 - cria um **deal** no **board/etapa** configurados na UI
+- (se enviar `company_name`) cria/vincula a empresa em `crm_companies` e liga no contato/deal via `client_company_id` (best-effort)
 - grava metadados em `deals.custom_fields`:
   - `inbound_source_id`
   - `inbound_external_event_id`

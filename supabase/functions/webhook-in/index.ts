@@ -21,12 +21,33 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 type LeadPayload = {
   external_event_id?: string;
+  /** Nome do contato (legado) */
   name?: string;
+  /** Email do contato */
   email?: string;
+  /** Telefone do contato */
   phone?: string;
   source?: string;
   notes?: string;
+  /** Nome da empresa (cliente) */
   company_name?: string;
+
+  // ===== Campos "produto" (espelham o modal Novo Negócio) =====
+  /** Nome do negócio */
+  deal_title?: string;
+  /** Valor estimado do negócio */
+  deal_value?: number | string;
+  /** Nome do contato principal (alias) */
+  contact_name?: string;
+
+  // Aliases comuns (camelCase / curtos)
+  companyName?: string;
+  dealTitle?: string;
+  dealValue?: number | string;
+  contactName?: string;
+  title?: string;
+  value?: number | string;
+  company?: string;
 };
 
 function json(status: number, body: unknown) {
@@ -60,6 +81,61 @@ function getSecretFromRequest(req: Request) {
   if (m && m[1]) return m[1].trim();
 
   return "";
+}
+
+function toNullableString(v: unknown) {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  return s ? s : null;
+}
+
+function toNullableNumber(v: unknown) {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const trimmed = v.trim();
+    if (!trimmed) return null;
+    // aceita "1.234,56" e "1234.56"
+    const normalized = trimmed.replace(/\./g, "").replace(",", ".");
+    const n = Number(normalized);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function getCompanyName(payload: LeadPayload) {
+  return (
+    toNullableString(payload.company_name) ||
+    toNullableString(payload.companyName) ||
+    toNullableString(payload.company) ||
+    null
+  );
+}
+
+function getContactName(payload: LeadPayload) {
+  return (
+    toNullableString(payload.contact_name) ||
+    toNullableString(payload.contactName) ||
+    toNullableString(payload.name) ||
+    null
+  );
+}
+
+function getDealTitle(payload: LeadPayload) {
+  return (
+    toNullableString(payload.deal_title) ||
+    toNullableString(payload.dealTitle) ||
+    toNullableString(payload.title) ||
+    null
+  );
+}
+
+function getDealValue(payload: LeadPayload) {
+  return (
+    toNullableNumber(payload.deal_value) ??
+    toNullableNumber(payload.dealValue) ??
+    toNullableNumber(payload.value) ??
+    null
+  );
 }
 
 Deno.serve(async (req) => {
@@ -96,10 +172,13 @@ Deno.serve(async (req) => {
     return json(400, { error: "JSON inválido" });
   }
 
-  const leadName = payload.name?.trim() || null;
+  const leadName = getContactName(payload);
   const leadEmail = payload.email?.trim()?.toLowerCase() || null;
   const leadPhone = normalizePhone(payload.phone || undefined);
   const externalEventId = payload.external_event_id?.trim() || null;
+  const companyName = getCompanyName(payload);
+  const dealTitleFromPayload = getDealTitle(payload);
+  const dealValue = getDealValue(payload);
 
   // 1) Auditoria/dedupe (idempotente quando external_event_id existe)
   if (externalEventId) {
@@ -122,6 +201,43 @@ Deno.serve(async (req) => {
 
   // 2) Upsert de contato (por email e/ou telefone)
   let contactId: string | null = null;
+  let clientCompanyId: string | null = null;
+
+  // 2.0) Empresa (best-effort): cria/vincula em crm_companies quando companyName existir
+  if (companyName) {
+    try {
+      const { data: existingCompany, error: companyFindErr } = await supabase
+        .from("crm_companies")
+        .select("id")
+        .eq("organization_id", source.organization_id)
+        .is("deleted_at", null)
+        .eq("name", companyName)
+        .limit(1)
+        .maybeSingle();
+
+      if (companyFindErr) throw companyFindErr;
+
+      if (existingCompany?.id) {
+        clientCompanyId = existingCompany.id as string;
+      } else {
+        const { data: createdCompany, error: companyCreateErr } = await supabase
+          .from("crm_companies")
+          .insert({
+            organization_id: source.organization_id,
+            name: companyName,
+          })
+          .select("id")
+          .single();
+
+        if (companyCreateErr) throw companyCreateErr;
+        clientCompanyId = (createdCompany as any)?.id ?? null;
+      }
+    } catch {
+      // não bloqueia o fluxo do webhook
+      clientCompanyId = null;
+    }
+  }
+
   if (leadEmail || leadPhone) {
     const filters: string[] = [];
     if (leadEmail) filters.push(`email.eq.${leadEmail}`);
@@ -144,7 +260,8 @@ Deno.serve(async (req) => {
       if (leadName && (!existing.name || existing.name === "Sem nome")) updates.name = leadName;
       if (leadEmail && !existing.email) updates.email = leadEmail;
       if (leadPhone && !existing.phone) updates.phone = leadPhone;
-      if (payload.company_name) updates.company_name = payload.company_name;
+      if (companyName) updates.company_name = companyName;
+      if (clientCompanyId) updates.client_company_id = clientCompanyId;
       if (payload.notes) updates.notes = payload.notes;
       if (payload.source) updates.source = payload.source;
 
@@ -164,7 +281,8 @@ Deno.serve(async (req) => {
           email: leadEmail,
           phone: leadPhone,
           source: payload.source || "webhook",
-          company_name: payload.company_name || null,
+          company_name: companyName,
+          client_company_id: clientCompanyId,
           notes: payload.notes || null,
         })
         .select("id")
@@ -176,23 +294,25 @@ Deno.serve(async (req) => {
   }
 
   // 3) Criar deal no board/estágio de entrada
-  const dealTitle = leadName || leadEmail || leadPhone || "Novo Lead";
+  const dealTitle = dealTitleFromPayload || leadName || leadEmail || leadPhone || "Novo Lead";
   const { data: createdDeal, error: dealErr } = await supabase
     .from("deals")
     .insert({
       organization_id: source.organization_id,
       title: dealTitle,
-      value: 0,
-      probability: 0,
+      value: dealValue ?? 0,
+      probability: 10,
       priority: "medium",
       board_id: source.entry_board_id,
       stage_id: source.entry_stage_id,
       contact_id: contactId,
+      client_company_id: clientCompanyId,
       last_stage_change_date: new Date().toISOString(),
-      tags: [],
+      tags: ["Novo"],
       custom_fields: {
         inbound_source_id: source.id,
         inbound_external_event_id: externalEventId,
+        inbound_company_name: companyName,
       },
     })
     .select("id")

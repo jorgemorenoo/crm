@@ -47,9 +47,12 @@ function buildCurlExample(url: string, secret: string) {
   -H 'X-Webhook-Secret: ${secret}' \\
   -d '{
     "external_event_id": "teste-123",
-    "name": "Lead Teste",
-    "email": "teste@exemplo.com",
-    "phone": "+55...",
+    "deal_title": "Contrato Anual - Acme",
+    "deal_value": 12000,
+    "company_name": "Empresa Ltd",
+    "contact_name": "Nome do Contato",
+    "email": "email@exemplo.com",
+    "phone": "+5511999999999",
     "source": "webhook"
   }'`;
 }
@@ -912,7 +915,7 @@ export const WebhooksSection: React.FC = () => {
                     <button
                       onClick={() =>
                         copy(
-                          `{"name":"Ana","email":"ana@exemplo.com","phone":"+55...","source":"hotmart"}`,
+                          `{"deal_title":"Contrato Anual - Acme","deal_value":12000,"company_name":"Empresa Ltd","contact_name":"Ana","email":"ana@exemplo.com","phone":"+5511999999999","source":"hotmart"}`,
                           'leadExample'
                         )
                       }
@@ -927,7 +930,7 @@ export const WebhooksSection: React.FC = () => {
                     </button>
                   </div>
                   <div className="font-mono text-xs bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg p-2 break-all">
-                    {`{ "name": "Ana", "email": "ana@exemplo.com", "phone": "+55...", "source": "hotmart" }`}
+                    {`{ "deal_title": "Contrato Anual - Acme", "deal_value": 12000, "company_name": "Empresa Ltd", "contact_name": "Ana", "email": "ana@exemplo.com", "phone": "+5511999999999", "source": "hotmart" }`}
                   </div>
                 </div>
               </div>
