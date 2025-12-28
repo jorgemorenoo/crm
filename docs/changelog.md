@@ -2,6 +2,11 @@
 
 ## 28/12/2025
 
+- **Installer — Storage travado em 27% (causa raiz)**:
+  - **Correção de credenciais do DB para migrations**: ao resolver as chaves do Supabase, o wizard agora mantém/reconstrói o `dbUrl` para usar `postgres.{projectRef}` + `dbPass` (mais permissões) em vez de `cli_login_postgres` (que pode falhar ao acessar schema `storage`)
+  - Evita o loop de ~10min em `migrations` aguardando `storage.buckets`
+
+
 - **Installer — Nome de projeto já existe (retry/F5)**:
   - **`create-project` agora é resiliente**: se o Supabase responder "already exists", o backend lista projetos da org e **reaproveita** o projeto existente em vez de travar
 
