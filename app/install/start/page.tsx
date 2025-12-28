@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertCircle, CheckCircle2, ExternalLink, Loader2, User, Mail, Lock, Rocket, Circle, ChevronRight } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ExternalLink, Loader2, User, Rocket, Database, Eye, EyeOff } from 'lucide-react';
 import { AnimatePresence, motion, useMotionValue, useSpring } from 'framer-motion';
 
 type InstallerMeta = { enabled: boolean; requiresToken: boolean };
@@ -23,30 +23,51 @@ async function hashPassword(password: string): Promise<string> {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-type Step = 'name' | 'email' | 'password' | 'vercel' | 'supabase' | 'validating' | 'ready' | 'locked';
+type Screen = 'identity' | 'vercel' | 'supabase' | 'validating' | 'ready' | 'locked';
 
-// Checklist items para o visual de "controle de missão"
-const CHECKLIST = [
-  { id: 'name', label: 'Identificação do tripulante', icon: User },
-  { id: 'email', label: 'Canal de comunicação', icon: Mail },
-  { id: 'password', label: 'Código de acesso', icon: Lock },
-  { id: 'vercel', label: 'Sistema de deploy', icon: Rocket },
-  { id: 'supabase', label: 'Base de dados', icon: Circle },
-] as const;
+// Configuração de cada tela
+const SCREENS = {
+  identity: {
+    badge: 'Capítulo 1',
+    title: 'Quem é você?',
+    subtitle: 'Antes de explorar novos mundos, precisamos saber quem está no comando.',
+    icon: User,
+    gradient: 'from-violet-500/20 to-fuchsia-500/20',
+    accentColor: 'violet',
+  },
+  vercel: {
+    badge: 'Capítulo 2',
+    title: 'Sistema de Deploy',
+    subtitle: 'Conecte com a Vercel para preparar sua nave.',
+    icon: Rocket,
+    gradient: 'from-cyan-500/20 to-blue-500/20',
+    accentColor: 'cyan',
+  },
+  supabase: {
+    badge: 'Capítulo 3',
+    title: 'Base de Dados',
+    subtitle: 'Conecte com o Supabase para armazenar suas descobertas.',
+    icon: Database,
+    gradient: 'from-emerald-500/20 to-teal-500/20',
+    accentColor: 'emerald',
+  },
+} as const;
 
 export default function InstallStartPage() {
   const router = useRouter();
   
   const [meta, setMeta] = useState<InstallerMeta | null>(null);
   const [metaError, setMetaError] = useState<string | null>(null);
-  const [step, setStep] = useState<Step>('name');
+  const [screen, setScreen] = useState<Screen>('identity');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   
-  // Dados do usuário
+  // Identity
   const [userName, setUserName] = useState('');
   const [userEmail, setUserEmail] = useState('');
   const [userPassword, setUserPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [unlockPassword, setUnlockPassword] = useState('');
   
   // Tokens
@@ -54,20 +75,17 @@ export default function InstallStartPage() {
   const [vercelToken, setVercelToken] = useState('');
   const [supabaseToken, setSupabaseToken] = useState('');
   
-  // Completed steps tracking
-  const [completedSteps, setCompletedSteps] = useState<Set<string>>(new Set());
-  
   const inputRef = useRef<HTMLInputElement>(null);
   
   const mx = useMotionValue(0);
   const my = useMotionValue(0);
-  const mxSpring = useSpring(mx, { stiffness: 100, damping: 30, mass: 0.8 });
-  const mySpring = useSpring(my, { stiffness: 100, damping: 30, mass: 0.8 });
+  const mxSpring = useSpring(mx, { stiffness: 80, damping: 30, mass: 1 });
+  const mySpring = useSpring(my, { stiffness: 80, damping: 30, mass: 1 });
   
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    mx.set(((e.clientX - rect.left) / rect.width - 0.5) * 20);
-    my.set(((e.clientY - rect.top) / rect.height - 0.5) * 15);
+    mx.set(((e.clientX - rect.left) / rect.width - 0.5) * 30);
+    my.set(((e.clientY - rect.top) / rect.height - 0.5) * 20);
   };
   
   const firstName = userName.split(' ')[0] || '';
@@ -102,7 +120,7 @@ export default function InstallStartPage() {
     
     // Se tem sessão salva com senha, precisa desbloquear
     if (savedPassHash && sessionLocked === 'true') {
-      setStep('locked');
+      setScreen('locked');
       return;
     }
     
@@ -112,36 +130,25 @@ export default function InstallStartPage() {
       return;
     }
     
-    // Restaura dados salvos
-    if (savedName) {
-      setUserName(savedName);
-      setCompletedSteps(prev => new Set(prev).add('name'));
-    }
-    if (savedEmail) {
-      setUserEmail(savedEmail);
-      setCompletedSteps(prev => new Set(prev).add('email'));
-    }
-    if (savedPassHash) {
-      setCompletedSteps(prev => new Set(prev).add('password'));
-    }
+    // Restaura progresso
+    if (savedName) setUserName(savedName);
+    if (savedEmail) setUserEmail(savedEmail);
     if (savedToken) {
       setVercelToken(savedToken);
-      setCompletedSteps(prev => new Set(prev).add('vercel'));
-    }
-    if (savedSupabaseToken) {
-      setSupabaseToken(savedSupabaseToken);
-      setCompletedSteps(prev => new Set(prev).add('supabase'));
+      if (savedSupabaseToken) {
+        setSupabaseToken(savedSupabaseToken);
+      } else {
+        setScreen('supabase');
+      }
+    } else if (savedPassHash) {
+      setScreen('vercel');
     }
   }, [router]);
   
-  // Auto-focus no input quando muda de step
+  // Auto-focus no input
   useEffect(() => {
-    setTimeout(() => inputRef.current?.focus(), 150);
-  }, [step]);
-  
-  const markComplete = (stepId: string) => {
-    setCompletedSteps(prev => new Set(prev).add(stepId));
-  };
+    setTimeout(() => inputRef.current?.focus(), 200);
+  }, [screen]);
   
   const handleUnlock = async () => {
     const savedPassHash = localStorage.getItem(STORAGE_USER_PASS_HASH);
@@ -155,15 +162,14 @@ export default function InstallStartPage() {
     if (inputHash === savedPassHash) {
       localStorage.setItem(STORAGE_SESSION_LOCKED, 'false');
       const savedToken = localStorage.getItem(STORAGE_TOKEN);
-      const savedProject = localStorage.getItem(STORAGE_PROJECT);
       const savedSupabaseToken = localStorage.getItem('crm_install_supabase_token');
       
-      if (savedToken && savedProject && savedSupabaseToken) {
+      if (savedToken && savedSupabaseToken) {
         router.push('/install/wizard');
-      } else if (savedToken && savedProject) {
-        setStep('supabase');
+      } else if (savedToken) {
+        setScreen('supabase');
       } else {
-        setStep('vercel');
+        setScreen('vercel');
       }
     } else {
       setError('Senha incorreta');
@@ -172,45 +178,39 @@ export default function InstallStartPage() {
     setIsLoading(false);
   };
   
-  const handleNameSubmit = () => {
+  const handleIdentitySubmit = async () => {
     const name = userName.trim();
+    const email = userEmail.trim().toLowerCase();
+    const pass = userPassword;
+    const confirm = confirmPassword;
+    
     if (!name || name.length < 2) {
       setError('Digite seu nome');
       return;
     }
-    setError('');
-    localStorage.setItem(STORAGE_USER_NAME, name);
-    markComplete('name');
-    setStep('email');
-  };
-  
-  const handleEmailSubmit = () => {
-    const email = userEmail.trim().toLowerCase();
     if (!email || !email.includes('@')) {
       setError('Digite um e-mail válido');
       return;
     }
-    setError('');
-    localStorage.setItem(STORAGE_USER_EMAIL, email);
-    markComplete('email');
-    setStep('password');
-  };
-  
-  const handlePasswordSubmit = async () => {
-    const pass = userPassword;
     if (!pass || pass.length < 6) {
-      setError('Mínimo 6 caracteres');
+      setError('Senha deve ter no mínimo 6 caracteres');
       return;
     }
+    if (pass !== confirm) {
+      setError('As senhas não conferem');
+      return;
+    }
+    
     setError('');
     
     const hash = await hashPassword(pass);
+    localStorage.setItem(STORAGE_USER_NAME, name);
+    localStorage.setItem(STORAGE_USER_EMAIL, email);
     localStorage.setItem(STORAGE_USER_PASS_HASH, hash);
     localStorage.setItem(STORAGE_SESSION_LOCKED, 'false');
     sessionStorage.setItem('crm_install_user_pass', pass);
     
-    markComplete('password');
-    setStep('vercel');
+    setScreen('vercel');
   };
   
   const handleVercelSubmit = async () => {
@@ -227,7 +227,7 @@ export default function InstallStartPage() {
     
     setError('');
     setIsLoading(true);
-    setStep('validating');
+    setScreen('validating');
     
     try {
       const res = await fetch('/api/installer/bootstrap', {
@@ -246,11 +246,10 @@ export default function InstallStartPage() {
       localStorage.setItem(STORAGE_PROJECT, JSON.stringify(data.project));
       if (installerToken.trim()) localStorage.setItem(STORAGE_INSTALLER_TOKEN, installerToken.trim());
       
-      markComplete('vercel');
-      setStep('supabase');
+      setScreen('supabase');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao validar token');
-      setStep('vercel');
+      setScreen('vercel');
     } finally {
       setIsLoading(false);
     }
@@ -259,33 +258,31 @@ export default function InstallStartPage() {
   const handleSupabaseSubmit = () => {
     const t = supabaseToken.trim();
     if (!t || !t.startsWith('sbp_')) {
-      setError('Token Supabase inválido');
+      setError('Token Supabase inválido (deve começar com sbp_)');
       return;
     }
     
     setError('');
     localStorage.setItem('crm_install_supabase_token', t);
-    markComplete('supabase');
-    setStep('ready');
+    setScreen('ready');
     
-    // Pequeno delay para mostrar o checklist completo antes de ir pro wizard
-    setTimeout(() => router.push('/install/wizard'), 1500);
+    setTimeout(() => router.push('/install/wizard'), 1200);
   };
   
   // Auto-submit quando cola token
   useEffect(() => {
-    if (step === 'vercel' && vercelToken.trim().length >= 20 && !isLoading) {
-      const handle = setTimeout(() => void handleVercelSubmit(), 600);
+    if (screen === 'vercel' && vercelToken.trim().length >= 24 && !isLoading) {
+      const handle = setTimeout(() => void handleVercelSubmit(), 800);
       return () => clearTimeout(handle);
     }
-  }, [vercelToken, step, isLoading]);
+  }, [vercelToken, screen, isLoading]);
   
   useEffect(() => {
-    if (step === 'supabase' && supabaseToken.trim().startsWith('sbp_') && supabaseToken.trim().length >= 20) {
-      const handle = setTimeout(() => void handleSupabaseSubmit(), 600);
+    if (screen === 'supabase' && supabaseToken.trim().startsWith('sbp_') && supabaseToken.trim().length >= 30) {
+      const handle = setTimeout(() => void handleSupabaseSubmit(), 800);
       return () => clearTimeout(handle);
     }
-  }, [supabaseToken, step]);
+  }, [supabaseToken, screen]);
   
   const handleKeyDown = (e: React.KeyboardEvent, action: () => void) => {
     if (e.key === 'Enter') {
@@ -294,17 +291,14 @@ export default function InstallStartPage() {
     }
   };
   
-  // Calcula o step atual para o checklist
-  const currentStepIndex = CHECKLIST.findIndex(c => c.id === step) ?? -1;
+  // Pega config da tela atual
+  const currentScreen = SCREENS[screen as keyof typeof SCREENS];
+  const Icon = currentScreen?.icon || User;
   
   if (!meta && !metaError) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="text-center"
-        >
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center">
           <Loader2 className="w-8 h-8 text-cyan-400 animate-spin mx-auto mb-4" />
           <p className="text-slate-500 text-sm">Iniciando sistemas...</p>
         </motion.div>
@@ -328,167 +322,133 @@ export default function InstallStartPage() {
   
   return (
     <div
-      className="min-h-screen flex bg-slate-950 relative overflow-hidden"
+      className="min-h-screen flex items-center justify-center bg-slate-950 relative overflow-hidden"
       onMouseMove={handleMouseMove}
       onMouseLeave={() => { mx.set(0); my.set(0); }}
     >
-      {/* Background com estrelas e nebulosas */}
+      {/* Background dinâmico baseado na tela */}
       <div className="absolute inset-0 pointer-events-none">
-        {/* Grade de pontos (estrelas distantes) */}
+        {/* Estrelas */}
         <div 
-          className="absolute inset-0 opacity-30"
+          className="absolute inset-0 opacity-40"
           style={{
-            backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.5) 1px, transparent 1px)',
-            backgroundSize: '60px 60px',
+            backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.6) 1px, transparent 1px)',
+            backgroundSize: '80px 80px',
           }}
         />
-        {/* Nebulosas */}
+        {/* Nebulosa principal - muda de cor por tela */}
         <motion.div
-          className="absolute -top-[30%] -right-[20%] w-[70%] h-[70%] rounded-full blur-[150px] bg-cyan-500/10"
+          className={`absolute top-1/2 left-1/2 w-[800px] h-[800px] -translate-x-1/2 -translate-y-1/2 rounded-full blur-[200px] bg-gradient-to-br ${currentScreen?.gradient || 'from-cyan-500/15 to-blue-500/15'}`}
           style={{ x: mxSpring, y: mySpring }}
-        />
-        <motion.div
-          className="absolute top-[50%] -left-[20%] w-[60%] h-[60%] rounded-full blur-[130px] bg-teal-500/8"
-          style={{ x: mxSpring, y: mySpring }}
-        />
-        <motion.div
-          className="absolute -bottom-[20%] right-[10%] w-[40%] h-[40%] rounded-full blur-[100px] bg-indigo-500/8"
-          style={{ x: mxSpring, y: mySpring }}
+          animate={{ scale: [1, 1.1, 1], opacity: [0.3, 0.5, 0.3] }}
+          transition={{ duration: 8, repeat: Infinity, ease: 'easeInOut' }}
         />
         {/* Vignette */}
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_0%,rgba(2,6,23,0.7)_100%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_0%,rgba(2,6,23,0.85)_100%)]" />
       </div>
       
-      {/* Layout em duas colunas */}
-      <div className="flex-1 flex items-center justify-center relative z-10 px-4 py-12">
-        <div className="w-full max-w-md">
-          {/* Header */}
-          <motion.div 
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6 }}
-            className="text-center mb-12"
-          >
-            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-cyan-500/10 border border-cyan-500/20 mb-6">
-              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-              <span className="text-cyan-400 text-sm font-medium">Pré-lançamento</span>
-            </div>
-            <h1 className="text-4xl font-bold text-white mb-3">
-              {step === 'locked' ? 'Sessão protegida' : 
-               step === 'ready' ? `Pronto para decolar, ${firstName}!` :
-               firstName ? `Olá, ${firstName}` : 'Preparação para a missão'}
-            </h1>
-            <p className="text-slate-400 text-lg">
-              {step === 'locked' ? 'Digite sua senha para continuar' :
-               step === 'ready' ? 'Todos os sistemas verificados' :
-               'Configure os sistemas antes do lançamento'}
-            </p>
-          </motion.div>
-          
-          {/* Checklist visual */}
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.2 }}
-            className="mb-8 space-y-3"
-          >
-            {CHECKLIST.map((item, index) => {
-              const isCompleted = completedSteps.has(item.id);
-              const isCurrent = step === item.id || (step === 'validating' && item.id === 'vercel');
-              const isPending = !isCompleted && !isCurrent;
-              const Icon = item.icon;
+      <div className="w-full max-w-md relative z-10 px-6">
+        <AnimatePresence mode="wait">
+          {/* ============ TELA: LOCKED ============ */}
+          {screen === 'locked' && (
+            <motion.div
+              key="locked"
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+              className="text-center"
+            >
+              <div className="inline-flex items-center justify-center w-20 h-20 rounded-3xl bg-amber-500/10 border border-amber-500/20 mb-8">
+                <AlertCircle className="w-10 h-10 text-amber-400" />
+              </div>
               
-              return (
-                <motion.div
-                  key={item.id}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.1 * index }}
-                  className={`flex items-center gap-4 p-4 rounded-xl border transition-all duration-300 ${
-                    isCompleted 
-                      ? 'bg-emerald-500/10 border-emerald-500/30' 
-                      : isCurrent 
-                        ? 'bg-cyan-500/10 border-cyan-500/30' 
-                        : 'bg-white/5 border-white/10 opacity-50'
-                  }`}
-                >
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
-                    isCompleted 
-                      ? 'bg-emerald-500/20' 
-                      : isCurrent 
-                        ? 'bg-cyan-500/20' 
-                        : 'bg-white/10'
-                  }`}>
-                    {isCompleted ? (
-                      <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                    ) : isCurrent ? (
-                      <Icon className="w-5 h-5 text-cyan-400" />
-                    ) : (
-                      <Icon className="w-5 h-5 text-slate-500" />
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <p className={`font-medium ${
-                      isCompleted ? 'text-emerald-400' : isCurrent ? 'text-white' : 'text-slate-500'
-                    }`}>
-                      {item.label}
-                    </p>
-                    {isCompleted && item.id === 'name' && (
-                      <p className="text-sm text-emerald-400/70">{userName}</p>
-                    )}
-                    {isCompleted && item.id === 'email' && (
-                      <p className="text-sm text-emerald-400/70">{userEmail}</p>
-                    )}
-                  </div>
-                  {isCompleted && (
-                    <span className="text-xs text-emerald-400 font-medium px-2 py-1 rounded-full bg-emerald-500/20">
-                      OK
-                    </span>
-                  )}
-                  {isCurrent && !isCompleted && (
-                    <ChevronRight className="w-5 h-5 text-cyan-400 animate-pulse" />
-                  )}
-                </motion.div>
-              );
-            })}
-          </motion.div>
-          
-          {/* Input area */}
-          <AnimatePresence mode="wait">
-            {step === 'locked' && (
-              <motion.div
-                key="locked"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="space-y-4"
+              <h1 className="text-3xl font-bold text-white mb-3">Sessão protegida</h1>
+              <p className="text-slate-400 mb-8">Digite sua senha para continuar de onde parou.</p>
+              
+              <input
+                ref={inputRef}
+                type="password"
+                value={unlockPassword}
+                onChange={(e) => setUnlockPassword(e.target.value)}
+                onKeyDown={(e) => handleKeyDown(e, handleUnlock)}
+                className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white text-center text-lg placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-400/50 focus:border-transparent mb-4"
+                placeholder="Sua senha"
+                autoFocus
+              />
+              
+              <button
+                onClick={handleUnlock}
+                disabled={isLoading}
+                className="w-full py-4 rounded-2xl bg-amber-500 hover:bg-amber-400 disabled:bg-amber-500/50 text-white font-semibold text-lg transition-all"
               >
-                <input
-                  ref={inputRef}
-                  type="password"
-                  value={unlockPassword}
-                  onChange={(e) => setUnlockPassword(e.target.value)}
-                  onKeyDown={(e) => handleKeyDown(e, handleUnlock)}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-transparent text-center text-lg"
-                  placeholder="Sua senha"
-                  autoFocus
-                />
-                <button
-                  onClick={handleUnlock}
-                  disabled={isLoading}
-                  className="w-full py-4 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:bg-cyan-500/50 text-white font-semibold transition-all"
-                >
-                  {isLoading ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Desbloquear'}
-                </button>
+                {isLoading ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Desbloquear'}
+              </button>
+              
+              {error && (
+                <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-4 text-red-400 text-sm">
+                  {error}
+                </motion.p>
+              )}
+            </motion.div>
+          )}
+          
+          {/* ============ TELA 1: IDENTITY ============ */}
+          {screen === 'identity' && (
+            <motion.div
+              key="identity"
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+            >
+              {/* Badge */}
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.1 }}
+                className="flex justify-center mb-6"
+              >
+                <span className="px-4 py-1.5 rounded-full bg-violet-500/10 border border-violet-500/20 text-violet-400 text-sm font-medium">
+                  Capítulo 1
+                </span>
               </motion.div>
-            )}
-            
-            {step === 'name' && (
-              <motion.div
-                key="name"
+              
+              {/* Icon */}
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.15, type: 'spring', stiffness: 200 }}
+                className="flex justify-center mb-6"
+              >
+                <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 border border-violet-500/20 flex items-center justify-center">
+                  <User className="w-10 h-10 text-violet-400" />
+                </div>
+              </motion.div>
+              
+              {/* Title */}
+              <motion.h1 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                className="text-3xl font-bold text-white text-center mb-3"
+              >
+                Quem é você?
+              </motion.h1>
+              <motion.p 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.25 }}
+                className="text-slate-400 text-center mb-8"
+              >
+                Antes de explorar novos mundos, precisamos saber quem está no comando.
+              </motion.p>
+              
+              {/* Form */}
+              <motion.div 
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
+                transition={{ delay: 0.3 }}
                 className="space-y-4"
               >
                 <div>
@@ -497,85 +457,131 @@ export default function InstallStartPage() {
                     type="text"
                     value={userName}
                     onChange={(e) => setUserName(e.target.value)}
-                    onKeyDown={(e) => handleKeyDown(e, handleNameSubmit)}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-transparent text-center text-lg"
-                    placeholder="Como você gostaria de ser chamado?"
+                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-400/50 focus:border-transparent"
+                    placeholder="Seu nome"
                     autoFocus
                   />
-                  <p className="text-slate-500 text-sm mt-2 text-center">Ex: Thales, Maria, João</p>
                 </div>
-                <button
-                  onClick={handleNameSubmit}
-                  className="w-full py-4 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-white font-semibold transition-all flex items-center justify-center gap-2"
-                >
-                  Confirmar <ChevronRight className="w-5 h-5" />
-                </button>
-              </motion.div>
-            )}
-            
-            {step === 'email' && (
-              <motion.div
-                key="email"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="space-y-4"
-              >
-                <input
-                  ref={inputRef}
-                  type="email"
-                  value={userEmail}
-                  onChange={(e) => setUserEmail(e.target.value)}
-                  onKeyDown={(e) => handleKeyDown(e, handleEmailSubmit)}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-transparent text-center text-lg"
-                  placeholder="seu@email.com"
-                  autoFocus
-                />
-                <button
-                  onClick={handleEmailSubmit}
-                  className="w-full py-4 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-white font-semibold transition-all flex items-center justify-center gap-2"
-                >
-                  Confirmar <ChevronRight className="w-5 h-5" />
-                </button>
-              </motion.div>
-            )}
-            
-            {step === 'password' && (
-              <motion.div
-                key="password"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="space-y-4"
-              >
+                
                 <div>
                   <input
-                    ref={inputRef}
-                    type="password"
+                    type="email"
+                    value={userEmail}
+                    onChange={(e) => setUserEmail(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-400/50 focus:border-transparent"
+                    placeholder="Seu e-mail"
+                  />
+                </div>
+                
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
                     value={userPassword}
                     onChange={(e) => setUserPassword(e.target.value)}
-                    onKeyDown={(e) => handleKeyDown(e, handlePasswordSubmit)}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-transparent text-center text-lg"
+                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 pr-12 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-400/50 focus:border-transparent"
                     placeholder="Crie uma senha"
-                    autoFocus
                   />
-                  <p className="text-slate-500 text-sm mt-2 text-center">Mínimo 6 caracteres • Será sua senha de acesso</p>
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                  >
+                    {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
                 </div>
+                
+                <div>
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    onKeyDown={(e) => handleKeyDown(e, handleIdentitySubmit)}
+                    className={`w-full bg-white/5 border rounded-2xl px-5 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-400/50 focus:border-transparent ${
+                      confirmPassword && confirmPassword !== userPassword 
+                        ? 'border-red-500/50' 
+                        : confirmPassword && confirmPassword === userPassword 
+                          ? 'border-emerald-500/50' 
+                          : 'border-white/10'
+                    }`}
+                    placeholder="Confirme a senha"
+                  />
+                  {confirmPassword && confirmPassword !== userPassword && (
+                    <p className="text-red-400 text-sm mt-2">As senhas não conferem</p>
+                  )}
+                </div>
+                
                 <button
-                  onClick={handlePasswordSubmit}
-                  className="w-full py-4 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-white font-semibold transition-all flex items-center justify-center gap-2"
+                  onClick={handleIdentitySubmit}
+                  className="w-full py-4 rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-400 hover:to-fuchsia-400 text-white font-semibold text-lg transition-all shadow-lg shadow-violet-500/25"
                 >
-                  Confirmar <ChevronRight className="w-5 h-5" />
+                  Continuar
                 </button>
               </motion.div>
-            )}
-            
-            {step === 'vercel' && (
-              <motion.div
-                key="vercel"
+              
+              {error && (
+                <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-4 text-red-400 text-sm text-center">
+                  {error}
+                </motion.p>
+              )}
+            </motion.div>
+          )}
+          
+          {/* ============ TELA 2: VERCEL ============ */}
+          {screen === 'vercel' && (
+            <motion.div
+              key="vercel"
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+            >
+              {/* Badge */}
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.1 }}
+                className="flex justify-center mb-6"
+              >
+                <span className="px-4 py-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-sm font-medium">
+                  Capítulo 2
+                </span>
+              </motion.div>
+              
+              {/* Icon */}
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.15, type: 'spring', stiffness: 200 }}
+                className="flex justify-center mb-6"
+              >
+                <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-cyan-500/20 to-blue-500/20 border border-cyan-500/20 flex items-center justify-center">
+                  <Rocket className="w-10 h-10 text-cyan-400" />
+                </div>
+              </motion.div>
+              
+              {/* Title */}
+              <motion.h1 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                className="text-3xl font-bold text-white text-center mb-3"
+              >
+                {firstName ? `Olá, ${firstName}!` : 'Sistema de Deploy'}
+              </motion.h1>
+              <motion.p 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.25 }}
+                className="text-slate-400 text-center mb-8"
+              >
+                Conecte com a Vercel para preparar sua nave.
+              </motion.p>
+              
+              {/* Form */}
+              <motion.div 
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
+                transition={{ delay: 0.3 }}
                 className="space-y-4"
               >
                 {meta?.requiresToken && (
@@ -583,49 +589,142 @@ export default function InstallStartPage() {
                     type="password"
                     value={installerToken}
                     onChange={(e) => setInstallerToken(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-transparent"
+                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-transparent"
                     placeholder="Installer token"
                   />
                 )}
+                
                 <input
                   ref={inputRef}
                   type="password"
                   value={vercelToken}
                   onChange={(e) => setVercelToken(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-transparent text-center"
+                  className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-transparent text-center"
                   placeholder="Cole seu token da Vercel"
                   autoFocus
                 />
+                
                 <a
                   href="https://vercel.com/account/tokens"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-2 text-sm text-cyan-400 hover:text-cyan-300 py-2"
+                  className="flex items-center justify-center gap-2 text-cyan-400 hover:text-cyan-300 py-3 transition-colors"
                 >
-                  Gerar token na Vercel <ExternalLink className="w-4 h-4" />
+                  <span>Gerar token na Vercel</span>
+                  <ExternalLink className="w-4 h-4" />
                 </a>
               </motion.div>
-            )}
-            
-            {step === 'validating' && (
-              <motion.div
-                key="validating"
+              
+              {error && (
+                <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-4 text-red-400 text-sm text-center">
+                  {error}
+                </motion.p>
+              )}
+              
+              <motion.button 
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="text-center py-8"
+                transition={{ delay: 0.4 }}
+                onClick={() => setScreen('identity')} 
+                className="mt-6 w-full text-slate-500 hover:text-slate-300 text-sm transition-colors"
               >
-                <Loader2 className="w-8 h-8 text-cyan-400 animate-spin mx-auto mb-4" />
-                <p className="text-slate-400">Verificando conexão com a Vercel...</p>
+                ← Voltar
+              </motion.button>
+            </motion.div>
+          )}
+          
+          {/* ============ TELA: VALIDATING ============ */}
+          {screen === 'validating' && (
+            <motion.div
+              key="validating"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="text-center py-12"
+            >
+              <div className="relative inline-flex items-center justify-center w-24 h-24 mb-8">
+                <motion.div 
+                  className="absolute inset-0 rounded-full border-2 border-cyan-400/30"
+                  animate={{ scale: [1, 1.4, 1], opacity: [0.5, 0, 0.5] }}
+                  transition={{ duration: 2, repeat: Infinity }}
+                />
+                <div className="w-20 h-20 rounded-full bg-cyan-500/10 flex items-center justify-center">
+                  <Loader2 className="w-10 h-10 text-cyan-400 animate-spin" />
+                </div>
+              </div>
+              <h2 className="text-2xl font-bold text-white mb-2">Verificando conexão</h2>
+              <p className="text-slate-400">Conectando com a Vercel...</p>
+            </motion.div>
+          )}
+          
+          {/* ============ TELA 3: SUPABASE ============ */}
+          {screen === 'supabase' && (
+            <motion.div
+              key="supabase"
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+            >
+              {/* Badge */}
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.1 }}
+                className="flex justify-center mb-6"
+              >
+                <span className="px-4 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-medium">
+                  Capítulo 3
+                </span>
               </motion.div>
-            )}
-            
-            {step === 'supabase' && (
+              
+              {/* Success indicator from previous step */}
               <motion.div
-                key="supabase"
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.05 }}
+                className="flex justify-center mb-4"
+              >
+                <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 text-cyan-400 text-xs">
+                  <CheckCircle2 className="w-3 h-3" /> Vercel conectada
+                </span>
+              </motion.div>
+              
+              {/* Icon */}
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.15, type: 'spring', stiffness: 200 }}
+                className="flex justify-center mb-6"
+              >
+                <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/20 flex items-center justify-center">
+                  <Database className="w-10 h-10 text-emerald-400" />
+                </div>
+              </motion.div>
+              
+              {/* Title */}
+              <motion.h1 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                className="text-3xl font-bold text-white text-center mb-3"
+              >
+                Base de Dados
+              </motion.h1>
+              <motion.p 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.25 }}
+                className="text-slate-400 text-center mb-8"
+              >
+                Último passo! Conecte com o Supabase.
+              </motion.p>
+              
+              {/* Form */}
+              <motion.div 
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
+                transition={{ delay: 0.3 }}
                 className="space-y-4"
               >
                 <input
@@ -633,72 +732,64 @@ export default function InstallStartPage() {
                   type="password"
                   value={supabaseToken}
                   onChange={(e) => setSupabaseToken(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:border-transparent text-center"
+                  className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/50 focus:border-transparent text-center"
                   placeholder="Cole seu token do Supabase"
                   autoFocus
                 />
+                
                 <a
                   href="https://supabase.com/dashboard/account/tokens"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-2 text-sm text-cyan-400 hover:text-cyan-300 py-2"
+                  className="flex items-center justify-center gap-2 text-emerald-400 hover:text-emerald-300 py-3 transition-colors"
                 >
-                  Gerar token no Supabase <ExternalLink className="w-4 h-4" />
+                  <span>Gerar token no Supabase</span>
+                  <ExternalLink className="w-4 h-4" />
                 </a>
               </motion.div>
-            )}
-            
-            {step === 'ready' && (
-              <motion.div
-                key="ready"
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="text-center py-8"
-              >
-                <motion.div
-                  initial={{ scale: 0 }}
-                  animate={{ scale: 1 }}
-                  transition={{ type: 'spring', stiffness: 200, damping: 15 }}
-                  className="w-20 h-20 rounded-full bg-gradient-to-br from-emerald-400 to-cyan-400 flex items-center justify-center mx-auto mb-6"
-                >
-                  <Rocket className="w-10 h-10 text-white" />
-                </motion.div>
-                <p className="text-slate-400 mb-2">Iniciando sequência de lançamento...</p>
-                <div className="flex items-center justify-center gap-1">
-                  <motion.span 
-                    className="w-2 h-2 rounded-full bg-cyan-400"
-                    animate={{ opacity: [0.3, 1, 0.3] }}
-                    transition={{ duration: 1, repeat: Infinity, delay: 0 }}
-                  />
-                  <motion.span 
-                    className="w-2 h-2 rounded-full bg-cyan-400"
-                    animate={{ opacity: [0.3, 1, 0.3] }}
-                    transition={{ duration: 1, repeat: Infinity, delay: 0.2 }}
-                  />
-                  <motion.span 
-                    className="w-2 h-2 rounded-full bg-cyan-400"
-                    animate={{ opacity: [0.3, 1, 0.3] }}
-                    transition={{ duration: 1, repeat: Infinity, delay: 0.4 }}
-                  />
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+              
+              {error && (
+                <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-4 text-red-400 text-sm text-center">
+                  {error}
+                </motion.p>
+              )}
+            </motion.div>
+          )}
           
-          {/* Error message */}
-          <AnimatePresence>
-            {error && (
+          {/* ============ TELA: READY ============ */}
+          {screen === 'ready' && (
+            <motion.div
+              key="ready"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.5 }}
+              className="text-center"
+            >
               <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="mt-4 rounded-xl bg-red-500/10 border border-red-500/20 p-4 text-red-400 text-sm text-center"
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ type: 'spring', stiffness: 200, damping: 15 }}
+                className="w-24 h-24 rounded-full bg-gradient-to-br from-emerald-400 to-cyan-400 flex items-center justify-center mx-auto mb-8 shadow-2xl shadow-emerald-500/30"
               >
-                {error}
+                <CheckCircle2 className="w-12 h-12 text-white" />
               </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
+              
+              <h1 className="text-3xl font-bold text-white mb-3">Tudo pronto, {firstName}!</h1>
+              <p className="text-slate-400 mb-4">Preparando a sequência de lançamento...</p>
+              
+              <div className="flex items-center justify-center gap-1">
+                {[0, 1, 2].map((i) => (
+                  <motion.span 
+                    key={i}
+                    className="w-2 h-2 rounded-full bg-emerald-400"
+                    animate={{ opacity: [0.3, 1, 0.3] }}
+                    transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }}
+                  />
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
