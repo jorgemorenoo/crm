@@ -94,6 +94,17 @@ function inferProjectRef(url: string): string | null {
     }
 }
 
+// Mapeia fases do stream para step IDs do installState
+const PHASE_TO_STEP: Record<string, string> = {
+  coordinates: 'health_check',
+  signal: 'resolve_keys',
+  station: 'migrations',
+  comms: 'edge_functions',
+  contact: 'bootstrap',
+  landing: 'redeploy',
+};
+
+
 export default function InstallWizardPage() {
   const router = useRouter();
   
@@ -626,6 +637,17 @@ export default function InstallWizardPage() {
     setCineSubtitle('Verificando estado do projeto...');
     setCineProgress(0);
     
+
+    // 🎮 Cria o estado inicial do "save game"
+    const newInstallState = createInstallState({
+      vercelProjectId: project.id,
+      supabaseProjectRef: supabaseProjectRef.trim() || undefined,
+      supabaseUrl: supabaseUrl.trim() || undefined,
+      adminEmail: adminEmail.trim(),
+    });
+    setInstallState(newInstallState);
+    saveInstallState(newInstallState);
+
     try {
       // 🧠 Health Check Inteligente - detecta o que pode ser pulado
       let healthCheck: { 
@@ -744,6 +766,12 @@ export default function InstallWizardPage() {
             const event = JSON.parse(line.slice(6));
             
             if (event.type === 'phase') {
+              // 🎮 Salva checkpoint a cada fase
+              const stepId = event.phase ? PHASE_TO_STEP[event.phase] : null;
+              if (stepId && installState) {
+                const updated = updateStepStatus(installState, stepId, 'running');
+                setInstallState(updated);
+              }
               setCineMessage(event.title || 'Processando...');
               setCineSubtitle(event.subtitle || '');
               setCineProgress(event.progress || 0);
@@ -763,6 +791,9 @@ export default function InstallWizardPage() {
               setCinePhase('success');
               setCineSubtitle(event.subtitle || 'Bem-vindo ao novo mundo.');
               setResult({ ok: true, steps: [] });
+              // 🎮 Limpa o save game - instalação completa!
+              clearInstallState();
+              setInstallState(null);
             } else if (event.type === 'error') {
               throw new Error(event.error || 'Erro durante a instalação');
             }
@@ -777,6 +808,11 @@ export default function InstallWizardPage() {
       setCinePhase('error');
       setCineMessage('Falha na missão');
       setCineSubtitle(message);
+      // 🎮 Salva o erro no save game para retry posterior
+      if (installState) {
+        const errorState = { ...installState, error: message };
+        saveInstallState(errorState);
+      }
     } finally {
       setInstalling(false);
     }
