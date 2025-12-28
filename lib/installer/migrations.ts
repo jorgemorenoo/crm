@@ -2,10 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { Client } from 'pg';
 
-const SCHEMA_PATH = path.resolve(
-  process.cwd(),
-  'supabase/migrations/20251201000000_schema_init.sql'
-);
+const SCHEMA_PATH = path.resolve(process.cwd(), 'supabase/migrations/20251201000000_schema_init.sql');
 
 function needsSsl(connectionString: string) {
   return !/sslmode=disable/i.test(connectionString);
@@ -26,47 +23,64 @@ async function sleep(ms: number) {
   await new Promise((r) => setTimeout(r, ms));
 }
 
+function isRetryableConnectError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes('ENOTFOUND') ||
+    msg.includes('EAI_AGAIN') ||
+    msg.includes('ECONNREFUSED') ||
+    msg.includes('ETIMEDOUT') ||
+    msg.includes('timeout')
+  );
+}
+
 /**
- * Tenta conectar ao banco com retry e backoff exponencial.
- * Útil quando o DNS do projeto Supabase ainda não propagou.
+ * Conecta com retry/backoff, recriando o Client a cada tentativa.
+ * Isso evita o erro: "Client has already been connected. You cannot reuse a client."
  */
-async function connectWithRetry(
-  client: Client,
+async function connectClientWithRetry(
+  createClient: () => Client,
   opts?: { maxAttempts?: number; initialDelayMs?: number }
-): Promise<void> {
+): Promise<Client> {
   const maxAttempts = opts?.maxAttempts ?? 5;
   const initialDelayMs = opts?.initialDelayMs ?? 3000;
-  
-  let lastError: Error | null = null;
-  
+
+  let lastError: unknown;
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const client = createClient();
     try {
       await client.connect();
-      return; // Sucesso!
+      return client;
     } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      const isRetryable = 
-        lastError.message.includes('ENOTFOUND') || 
-        lastError.message.includes('ECONNREFUSED') ||
-        lastError.message.includes('ETIMEDOUT') ||
-        lastError.message.includes('EAI_AGAIN');
-      
-      if (!isRetryable || attempt === maxAttempts) {
-        throw lastError;
+      lastError = err;
+      try {
+        await client.end().catch(() => undefined);
+      } catch {
+        // ignore
       }
-      
-      const delayMs = initialDelayMs * Math.pow(2, attempt - 1); // Backoff exponencial
-      console.log(`[migrations] Conexão falhou (${lastError.message}), tentativa ${attempt}/${maxAttempts}. Aguardando ${delayMs/1000}s...`);
+
+      if (!isRetryableConnectError(err) || attempt === maxAttempts) {
+        throw err;
+      }
+
+      const delayMs = initialDelayMs * Math.pow(2, attempt - 1);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(
+        `[migrations] Conexão falhou (${msg}), tentativa ${attempt}/${maxAttempts}. Aguardando ${Math.round(
+          delayMs / 1000
+        )}s...`
+      );
       await sleep(delayMs);
     }
   }
-  
-  throw lastError || new Error('Falha ao conectar ao banco de dados');
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'Falha ao conectar ao banco de dados'));
 }
 
 async function waitForStorageReady(client: Client, opts?: { timeoutMs?: number; pollMs?: number }) {
   const timeoutMs = typeof opts?.timeoutMs === 'number' ? opts.timeoutMs : 210_000;
-  const pollMs = typeof opts?.pollMs === 'number' ? opts.pollMs : 4_000;
+  const pollMs = typeof opts?.pollMs === 'number' ? opts?.pollMs : 4_000;
   const t0 = Date.now();
 
   while (Date.now() - t0 < timeoutMs) {
@@ -89,24 +103,21 @@ async function waitForStorageReady(client: Client, opts?: { timeoutMs?: number; 
 
 /**
  * Função pública `runSchemaMigration` do projeto.
- *
- * @param {string} dbUrl - Parâmetro `dbUrl`.
- * @returns {Promise<void>} Retorna uma Promise resolvida sem valor.
  */
 export async function runSchemaMigration(dbUrl: string) {
   const schemaSql = fs.readFileSync(SCHEMA_PATH, 'utf8');
   const normalizedDbUrl = stripSslModeParam(dbUrl);
 
-  const client = new Client({
-    connectionString: normalizedDbUrl,
-    // NOTE: Supabase DB uses TLS; on some networks a MITM/corporate proxy can inject a cert chain
-    // that Node doesn't trust. For the installer/migrations step we prefer "no-verify" over failure.
-    ssl: needsSsl(dbUrl) ? { rejectUnauthorized: false } : undefined,
-  });
+  const createClient = () =>
+    new Client({
+      connectionString: normalizedDbUrl,
+      // NOTE: Supabase DB uses TLS; on some networks a MITM/corporate proxy can inject a cert chain
+      // that Node doesn't trust. For the installer/migrations step we prefer "no-verify" over failure.
+      ssl: needsSsl(dbUrl) ? { rejectUnauthorized: false } : undefined,
+    });
 
-  // Tenta conectar com retry (DNS pode demorar a propagar após criar projeto)
-  await connectWithRetry(client, { maxAttempts: 5, initialDelayMs: 3000 });
-  
+  const client = await connectClientWithRetry(createClient, { maxAttempts: 5, initialDelayMs: 3000 });
+
   try {
     // Never "skip" Storage. We wait until it's ready, then run migrations.
     await waitForStorageReady(client);
