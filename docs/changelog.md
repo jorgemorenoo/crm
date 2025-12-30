@@ -21,6 +21,10 @@
   - **Cobertura**: token Vercel inválido/sem escopo, installer token inválido, bloqueio same-origin/CSRF, token Supabase inválido e rede instável.
   - **Arquivo**: `app/install/wizard/page.tsx`
 
+- **Auth/UX — Logout sem “flash” de usuário**:
+  - **Problema**: ao deslogar, o app shell continuava renderizando no `(protected)` e caía no fallback `"Usuário"`.
+  - **Solução**: `components/Layout.tsx` agora verifica `user/loading` do `AuthContext` e, quando não autenticado, faz `router.replace('/login')` e interrompe o render.
+
 ## 29/12/2025
 
 - **Installer — Bloqueio de acesso após instalação completa**:
