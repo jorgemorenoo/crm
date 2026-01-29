@@ -204,7 +204,7 @@ Agora vamos configurar tudo usando o wizard automatizado:
    **a) Token da Vercel:**
    - Vá em Vercel → Settings → Tokens
    - Clique em "Create Token"
-   - Dê um nome (ex: "NossoCRM Installer")
+   - Dê um nome (ex: "77 CRM Installer")
    - Copie o token (aparece só uma vez!)
 
    **b) Credenciais do Supabase:**
@@ -312,7 +312,7 @@ Na primeira vez, você precisará:
 
 ### Navegação Principal
 
-O NossoCRM tem estas áreas principais:
+O 77 CRM tem estas áreas principais:
 
 - **📊 Dashboard**: Visão geral com métricas e gráficos
 - **📋 Pipeline**: Visualização Kanban das oportunidades
@@ -394,7 +394,7 @@ Para usar o assistente de IA, você precisa configurar uma chave de API:
 
 ### Configurar Permissões
 
-O NossoCRM tem dois tipos de usuários:
+O 77 CRM tem dois tipos de usuários:
 
 - **👑 Administrador**: Pode tudo (configurações, usuários, etc.)
 - **👤 Vendedor**: Pode usar o CRM normalmente, mas não altera configurações

@@ -2,8 +2,8 @@ import type { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'NossoCRM',
-    short_name: 'NossoCRM',
+    name: '77 CRM',
+    short_name: '77 CRM',
     description: 'CRM Inteligente para Gestão de Vendas',
     start_url: '/boards',
     display: 'standalone',

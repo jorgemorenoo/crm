@@ -1,4 +1,4 @@
-# AGENTS.md — NossoCRM
+# AGENTS.md — 77 CRM
 
 ## Commands
 - **Dev**: `npm run dev`
