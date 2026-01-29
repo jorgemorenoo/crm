@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   title: '77 CRM',
   description: 'CRM Inteligente para Gestão de Vendas',
   icons: {
-    icon: '/images/favicon77.png',
+    icon: '/favicon.ico',
     apple: '/images/favicon77.png',
   },
 }

@@ -39,6 +39,7 @@ export function NavigationRail({ onOpenMore, sidebarCollapsed }: NavigationRailP
             alt="77 CRM" 
             width={faviconSize} 
             height={faviconSize}
+            priority
             className="rounded-lg shadow-lg shadow-primary-500/20 transition-all duration-300 ease-in-out"
           />
         </Link>
