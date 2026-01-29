@@ -1,4 +1,4 @@
-# NossoCRM
+# 77 CRM
 
 > CRM inteligente com assistente de IA integrado. Gerencie seu pipeline de vendas, contatos e atividades de forma visual e produtiva.
 
@@ -19,9 +19,9 @@
 
 ## 🎯 Sobre
 
-**NossoCRM** é uma plataforma completa de gestão de relacionamento com clientes (CRM) que ajuda equipes de vendas a serem mais produtivas e organizadas.
+**77 CRM** é uma plataforma completa de gestão de relacionamento com clientes (CRM) que ajuda equipes de vendas a serem mais produtivas e organizadas.
 
-### Por que escolher NossoCRM?
+### Por que escolher 77 CRM?
 
 - 🚀 **Instalação em minutos**: Deploy automático na Vercel + wizard que configura tudo
 - 🤖 **Assistente de IA**: Converse com seu CRM e peça análises, crie deals, gere scripts de vendas
