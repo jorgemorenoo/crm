@@ -1,5 +1,6 @@
 import React from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils/cn';
 import { PRIMARY_NAV, SECONDARY_NAV } from './navConfig';
@@ -7,15 +8,19 @@ import { PRIMARY_NAV, SECONDARY_NAV } from './navConfig';
 export interface NavigationRailProps {
   /** Optional: used only if we want to keep "More" as a sheet trigger (mobile-like). */
   onOpenMore?: () => void;
+  sidebarCollapsed?: boolean;
 }
 
-export function NavigationRail({ onOpenMore }: NavigationRailProps) {
+export function NavigationRail({ onOpenMore, sidebarCollapsed }: NavigationRailProps) {
   const pathname = usePathname();
 
   const isHrefActive = (href: string) =>
     pathname === href ||
     (href === '/boards' && pathname === '/pipeline') ||
     (href === '/pipeline' && pathname === '/boards');
+
+  // Tamanho dinâmico do favicon baseado no collapse
+  const faviconSize = sidebarCollapsed ? 32 : 40;
 
   return (
     <nav
@@ -28,9 +33,15 @@ export function NavigationRail({ onOpenMore }: NavigationRailProps) {
       )}
     >
       <div className="flex flex-col items-center gap-2 py-4">
-        <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-primary-700 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-primary-500/20">
-          N
-        </div>
+        <Link href="/boards" className="block transition-all duration-300 ease-in-out">
+          <Image 
+            src="/images/favicon77.png" 
+            alt="77 CRM" 
+            width={faviconSize} 
+            height={faviconSize}
+            className="rounded-lg shadow-lg shadow-primary-500/20 transition-all duration-300 ease-in-out"
+          />
+        </Link>
       </div>
 
       <div className="flex-1 px-3 py-2 overflow-y-auto scrollbar-custom">

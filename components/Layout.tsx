@@ -228,7 +228,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       <SkipLink targetId="main-content" />
 
       {/* Tablet rail (shows full icon set; no "More" sheet needed) */}
-      {isTablet ? <NavigationRail /> : null}
+      {isTablet ? <NavigationRail sidebarCollapsed={sidebarCollapsed} /> : null}
 
       {/* Sidebar - Collapsible */}
       {isDesktop ? (

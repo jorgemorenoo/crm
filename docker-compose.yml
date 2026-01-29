@@ -1,0 +1,53 @@
+services:
+  # PostgreSQL para desenvolvimento local
+  postgres:
+    image: postgres:15-alpine
+    container_name: 77crm-postgres
+    environment:
+      POSTGRES_DB: 77crm_dev
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - 77crm-network
+
+  # Next.js App
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: 77crm-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Use Supabase Cloud (gratuito)
+      # Preencha com suas credenciais do supabase.com
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-https://seu-projeto.supabase.co}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-sua-chave-anon}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-sua-chave-service-role}
+      ALLOW_AI_TEST_ROUTE: "true"
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run dev
+    networks:
+      - 77crm-network
+
+volumes:
+  postgres_data:
+
+networks:
+  77crm-network:
+    driver: bridge
