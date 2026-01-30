@@ -28,6 +28,9 @@
   --color-dark-card: #0f172a;
   --color-dark-border: #1e293b;
   --color-dark-hover: #334155;
+
+  /* Custom Button Color */
+  --color-custom-button: #B0926B;
 }
 
 /* ========================================
