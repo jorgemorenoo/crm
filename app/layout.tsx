@@ -7,11 +7,23 @@ import { InstallBanner } from '@/components/pwa/InstallBanner'
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter' })
 
 export const metadata: Metadata = {
-  title: '77 CRM',
-  description: 'CRM Inteligente para Gestão de Vendas',
+  title: '77 CRM | Pipeline de Vendas integrado com AI',
+  description: '77 CRM para gestão completa de Leads, exclusivo para uso interno da empresa.',
   icons: {
     icon: '/favicon.ico',
     apple: '/apple-touch-icon.png',
+  },
+  openGraph: {
+    title: '77 CRM | Pipeline de Vendas integrado com AI',
+    description: '77 CRM para gestão completa de Leads, exclusivo para uso interno da empresa.',
+    images: [
+      {
+        url: '/android-chrome-512x512.png',
+        width: 512,
+        height: 512,
+        alt: '77 CRM Logo',
+      },
+    ],
   },
 }
 
